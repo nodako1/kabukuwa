@@ -62,7 +62,9 @@ export type ObservationThemeId =
   | "listen-to-someone"
   | "check-a-trap"
   | "complete-one-tree"
-  | "walk-the-loop";
+  | "walk-the-loop"
+  | "set-player-trap"
+  | "check-player-trap";
 
 export interface DailyPlan {
   day: number;
@@ -82,6 +84,8 @@ export interface ObservationProgress {
   capturedSpecimenIds: string[];
   inspectedWithoutClueTreeIds: string[];
   checkedTrapTreeIds: string[];
+  placedPlayerTrapIds: string[];
+  checkedPlayerTrapIds: string[];
   completed: boolean;
   completedAtMinutes?: number;
 }
@@ -101,6 +105,8 @@ export interface ObservationJournalEntry {
   capturedSpecimenIds: string[];
   largestSpecimenId?: string;
   firstCatchInsectIds: InsectId[];
+  placedPlayerTrapIds: string[];
+  checkedPlayerTrapIds: string[];
   stampId?: string;
   diaryLines: string[];
 }
@@ -170,7 +176,10 @@ export interface Specimen {
   treeId?: string;
   inspectionPointId?: string;
   rankingEligible: boolean;
+  captureSource: CaptureSource;
 }
+
+export type CaptureSource = "tree" | "fixed-banana" | "fixed-light" | "player-banana";
 
 export interface ExplorationState {
   locationId: LocationId;
@@ -213,6 +222,7 @@ export interface TreeDefinition {
   clueProfileId: string;
   encounterKind: SpotKind;
   trapKind?: "banana" | "light";
+  playerTrapSlot?: "banana";
 }
 
 export interface AmbientPlacement {
@@ -258,6 +268,48 @@ export interface TrapState {
   installed: boolean;
 }
 
+export type PlayerTrapPhase = "waiting" | "ready" | "opened";
+
+export type PlayerTrapPresenceTier = "none" | "base" | "daily-nature" | "player-trap";
+
+export interface PlayerTrapEncounter {
+  id: string;
+  insectId: InsectId;
+  sizeMm: number;
+  rankingEligible: true;
+  caught: boolean;
+  x: number;
+  y: number;
+}
+
+export interface PlayerTrapOutcomePlan {
+  planVersion: 1;
+  resolvedDay: number;
+  resolvedNatureId: DailyNatureId;
+  presenceTier: PlayerTrapPresenceTier;
+  encounter?: PlayerTrapEncounter;
+  ambientPlacements: AmbientPlacement[];
+}
+
+export interface PlayerTrapState {
+  id: string;
+  kind: "banana";
+  sequence: number;
+  treeId: string;
+  installedDay: number;
+  installedAtMinutes: number;
+  readyDay: number;
+  phase: PlayerTrapPhase;
+  openedAtMinutes?: number;
+  outcomePlan?: PlayerTrapOutcomePlan;
+}
+
+export interface PlayerTrapKitState {
+  unlocked: boolean;
+  nextSequence: number;
+  activeTrap?: PlayerTrapState;
+}
+
 export type Outcome =
   | { type: "empty"; spotId: string; text: string }
   | { type: "caught"; specimen: Specimen; isPersonalBest: boolean; isFirstCatch?: boolean }
@@ -269,6 +321,7 @@ export interface GameFlags {
   pickupCompletedDay: number;
   extraHintDay: number;
   fieldTutorialSeen: boolean;
+  playerTrapTutorialSeen: boolean;
 }
 
 export interface GameBuffs {
@@ -277,8 +330,8 @@ export interface GameBuffs {
 }
 
 export interface GameState {
-  schemaVersion: 4;
-  contentVersion: 4;
+  schemaVersion: 5;
+  contentVersion: 5;
   rngVersion: 1;
   worldSeed: string;
   revision: number;
@@ -299,6 +352,8 @@ export interface GameState {
   discoveredClueSessionIds: string[];
   caughtEncounterIds: string[];
   trapStates: Record<string, TrapState>;
+  playerTrapKit: PlayerTrapKitState;
+  activePlayerTrapInspectionId?: string;
   dailyPlansByDay: Record<string, DailyPlan>;
   observationProgressByDay: Record<string, ObservationProgress>;
   observationJournalByDay: Record<string, ObservationJournalEntry>;
@@ -315,6 +370,12 @@ export type GameCommand =
   | { type: "VIEW_INSPECTION_POINT"; pointId: string }
   | { type: "CATCH_INSPECTION_ENCOUNTER"; encounterId: string }
   | { type: "CLOSE_TREE_INSPECTION" }
+  | { type: "INSTALL_PLAYER_TRAP"; treeId: string }
+  | { type: "REMOVE_WAITING_PLAYER_TRAP"; trapId: string }
+  | { type: "OPEN_PLAYER_TRAP_INSPECTION"; trapId: string }
+  | { type: "CATCH_PLAYER_TRAP_ENCOUNTER"; trapId: string; encounterId: string }
+  | { type: "CLOSE_PLAYER_TRAP_INSPECTION"; trapId: string }
+  | { type: "RECOVER_PLAYER_TRAP"; trapId: string }
   | {
       type: "DISCOVER_TREE_CLUE";
       treeId: string;

@@ -83,6 +83,16 @@ const speciesForField = (fieldId: TreeDefinition["fieldId"]): TreeDefinition["sp
   return "other";
 };
 
+const PLAYER_BANANA_TRAP_TREE_IDS = new Set([
+  "shrine-tree-1",
+  "shrine-tree-3",
+  "mixed-tree-1",
+  "mixed-tree-3",
+  "oak-tree-1",
+  "oak-tree-3",
+  "school-tree-2",
+]);
+
 export const trees: TreeDefinition[] = fields.flatMap((field) => {
   if (!field.locationId) return [];
   const location = locationById[field.locationId];
@@ -103,6 +113,7 @@ export const trees: TreeDefinition[] = fields.flatMap((field) => {
       clueProfileId: hotspot.kind === "light-trap" ? "light" : hotspot.kind === "banana-trap" ? "sweet" : "tree",
       encounterKind: hotspot.kind,
       trapKind: hotspot.kind === "banana-trap" ? "banana" : hotspot.kind === "light-trap" ? "light" : undefined,
+      playerTrapSlot: PLAYER_BANANA_TRAP_TREE_IDS.has(hotspot.id) ? "banana" : undefined,
     } satisfies TreeDefinition];
   });
 });

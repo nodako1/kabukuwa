@@ -13,6 +13,8 @@ import {
   generateDailyPlan,
   getObservationProgressText,
   naturePresenceMultiplier,
+  recordPlayerTrapChecked,
+  recordPlayerTrapInstalled,
 } from "./daily";
 import { createInitialGame, gameReducer } from "./engine";
 import { rollEncounter } from "./rules";
@@ -109,6 +111,47 @@ describe("daily nature and observation", () => {
       timeMinutes: 1200,
     });
     expect(afterAllSchedules.rumorNpcId).toBe("grandma");
+  });
+
+  it("only offers player-trap themes when the morning state makes them possible", () => {
+    let sawSet = false;
+    let sawCheck = false;
+    for (let index = 0; index < 500; index += 1) {
+      const base = {
+        rngVersion: 1,
+        worldSeed: `trap-theme-${index}`,
+        day: 3,
+        secretRouteUnlocked: false,
+        timeMinutes: 360,
+      };
+      const unavailable = generateDailyPlan(base);
+      expect(["set-player-trap", "check-player-trap"]).not.toContain(unavailable.themeId);
+      if (generateDailyPlan({ ...base, canSetPlayerTrap: true }).themeId === "set-player-trap") sawSet = true;
+      if (generateDailyPlan({ ...base, hasCheckablePlayerTrap: true }).themeId === "check-player-trap") sawCheck = true;
+    }
+    expect({ sawSet, sawCheck }).toEqual({ sawSet: true, sawCheck: true });
+  });
+
+  it("records player-trap placement and checking as duplicate-safe observation progress", () => {
+    const trapId = "player-trap:1:oak-tree-1:day-1";
+    let state = withDailyPlan(createInitialGame("trap-progress"), { themeId: "set-player-trap" });
+    state = recordPlayerTrapInstalled(state, trapId, 500);
+    state = recordPlayerTrapInstalled(state, trapId, 510);
+    expect(state.observationProgressByDay["1"].placedPlayerTrapIds).toEqual([trapId]);
+    expect(state.observationProgressByDay["1"].completed).toBe(true);
+
+    state = withDailyPlan(state, { themeId: "check-player-trap" });
+    state = {
+      ...state,
+      observationProgressByDay: {
+        "1": { ...state.observationProgressByDay["1"], completed: false, completedAtMinutes: undefined },
+      },
+    };
+    state = recordPlayerTrapChecked(state, trapId, ["ant", "green-bottle", "ant"], 600);
+    state = recordPlayerTrapChecked(state, trapId, ["ant"], 610);
+    expect(state.observationProgressByDay["1"].checkedPlayerTrapIds).toEqual([trapId]);
+    expect(state.observationProgressByDay["1"].ambientInsectIds).toEqual(["ant", "green-bottle"]);
+    expect(state.observationProgressByDay["1"].completed).toBe(true);
   });
 
   it("biases still-summer plans toward trust-your-eyes with triple weighting", () => {
@@ -269,6 +312,7 @@ describe("daily nature and observation", () => {
         spotId: "oak-tree-1",
         treeId: "oak-tree-1",
         rankingEligible: true,
+        captureSource: "tree",
       }],
     };
 

@@ -28,6 +28,7 @@ import type {
 } from "../types/game";
 import { DAY_END } from "./clock";
 import { deterministicRoll } from "./rng";
+import { treeIdFromPlayerTrapId } from "./playerTrap";
 
 export const MAIN_LOOP_FIELD_IDS: FieldId[] = [
   "grandma-house",
@@ -46,6 +47,8 @@ interface DailyPlanContext {
   day: number;
   secretRouteUnlocked: boolean;
   timeMinutes?: number;
+  canSetPlayerTrap?: boolean;
+  hasCheckablePlayerTrap?: boolean;
 }
 
 interface GeneratePlanOptions {
@@ -77,7 +80,9 @@ const feasibleThemeIds = (
 ): ObservationThemeId[] => {
   if (options.migrationFallback) return ["inspect-three-trees"];
   const themes = observationThemes.map((theme) => theme.id).filter((themeId) =>
-    themeId !== "check-a-trap" || natureId === "sweet-breeze" || natureId === "moths-at-light",
+    (themeId !== "check-a-trap" || natureId === "sweet-breeze" || natureId === "moths-at-light") &&
+    (themeId !== "set-player-trap" || context.canSetPlayerTrap === true) &&
+    (themeId !== "check-player-trap" || context.hasCheckablePlayerTrap === true),
   );
   if ((context.timeMinutes ?? 360) >= 960) {
     return themes.filter((themeId) =>
@@ -159,6 +164,8 @@ export const createObservationProgress = (
   capturedSpecimenIds: [],
   inspectedWithoutClueTreeIds: [],
   checkedTrapTreeIds: [],
+  placedPlayerTrapIds: [],
+  checkedPlayerTrapIds: [],
   completed: false,
 });
 
@@ -211,6 +218,10 @@ export const isObservationThemeComplete = (
       return hasCompletedTree(state, progress);
     case "walk-the-loop":
       return MAIN_LOOP_FIELD_IDS.every((fieldId) => progress.visitedFieldIds.includes(fieldId));
+    case "set-player-trap":
+      return progress.placedPlayerTrapIds.length >= 1;
+    case "check-player-trap":
+      return progress.checkedPlayerTrapIds.length >= 1;
   }
 };
 
@@ -298,6 +309,27 @@ export const recordSpecimenCapture = (state: GameState, specimenId: string): Gam
     ? progress
     : { ...progress, capturedSpecimenIds: [...progress.capturedSpecimenIds, specimenId] });
 
+export const recordPlayerTrapInstalled = (
+  state: GameState,
+  trapId: string,
+  atMinutes: number,
+): GameState => updateProgress(state, (progress) => progress.placedPlayerTrapIds.includes(trapId)
+  ? progress
+  : { ...progress, placedPlayerTrapIds: [...progress.placedPlayerTrapIds, trapId] }, atMinutes);
+
+export const recordPlayerTrapChecked = (
+  state: GameState,
+  trapId: string,
+  ambientInsectIds: AmbientInsectId[],
+  atMinutes: number,
+): GameState => updateProgress(state, (progress) => ({
+  ...progress,
+  checkedPlayerTrapIds: progress.checkedPlayerTrapIds.includes(trapId)
+    ? progress.checkedPlayerTrapIds
+    : [...progress.checkedPlayerTrapIds, trapId],
+  ambientInsectIds: unique([...progress.ambientInsectIds, ...ambientInsectIds]),
+}), atMinutes);
+
 export const naturePresenceMultiplier = (
   state: GameState,
   hotspot: HotspotDefinition,
@@ -355,6 +387,8 @@ export const getObservationProgressText = (state: GameState): string => {
     case "check-a-trap": return `${Math.min(1, progress.checkedTrapTreeIds.length)} / 1か所`;
     case "complete-one-tree": return "1本をすみずみまで";
     case "walk-the-loop": return `${MAIN_LOOP_FIELD_IDS.filter((id) => progress.visitedFieldIds.includes(id)).length} / 8か所`;
+    case "set-player-trap": return `${Math.min(1, progress.placedPlayerTrapIds.length)} / 1か所`;
+    case "check-player-trap": return `${Math.min(1, progress.checkedPlayerTrapIds.length)} / 1か所`;
   }
 };
 
@@ -368,6 +402,23 @@ const buildDiaryLines = (
     ? dailyNatureById[plan.natureId].diaryLead
     : "今日は夏の村を歩いた。";
   const captures = state.specimens.filter((specimen) => capturedSpecimenIds.includes(specimen.id));
+  const checkedTrapId = progress.checkedPlayerTrapIds[0];
+  const checkedTree = checkedTrapId ? treeById[treeIdFromPlayerTrapId(checkedTrapId) ?? ""] : undefined;
+  const checkedLocation = checkedTree ? fieldById[checkedTree.fieldId].locationId : undefined;
+  const playerTrapCapture = captures.find((specimen) => specimen.captureSource === "player-banana");
+  const placedTrapId = progress.placedPlayerTrapIds.at(-1);
+  const placedTree = placedTrapId ? treeById[treeIdFromPlayerTrapId(placedTrapId) ?? ""] : undefined;
+  const placedLocation = placedTree ? fieldById[placedTree.fieldId].locationId : undefined;
+  const trapLines: string[] = [];
+  if (checkedTrapId && checkedLocation) {
+    trapLines.push(playerTrapCapture
+      ? `昨日${locationById[checkedLocation].name}へ仕掛けたトラップを見に行き、${insectById[playerTrapCapture.insectId].name}を見つけた。`
+      : `昨日${locationById[checkedLocation].name}へ仕掛けたトラップを見に行き、小さな虫たちと仕掛けのようすを観察した。`);
+  }
+  if (placedTrapId && placedLocation) {
+    trapLines.push(`今日は${locationById[placedLocation].name}の木に、明日のための仕掛けを置いた。`);
+  }
+  if (trapLines.length > 0) return [first, ...trapLines];
   if (captures.length > 0) {
     const last = captures[captures.length - 1];
     const discovery = progress.inspectedTreeIds.length > 0
@@ -429,6 +480,8 @@ export const finalizeObservationJournal = (state: GameState): GameState => {
     capturedSpecimenIds,
     largestSpecimenId: largest?.id,
     firstCatchInsectIds,
+    placedPlayerTrapIds: [...progress.placedPlayerTrapIds],
+    checkedPlayerTrapIds: [...progress.checkedPlayerTrapIds],
     stampId: progress.completed ? `stamp:${plan.themeId}` : undefined,
     diaryLines: buildDiaryLines(state, progress, capturedSpecimenIds),
   };
@@ -439,19 +492,26 @@ export const finalizeObservationJournal = (state: GameState): GameState => {
 };
 
 export const startDailyObservation = (state: GameState, day: number): GameState => {
-  const plan = generateDailyPlan({
-    rngVersion: state.rngVersion,
-    worldSeed: state.worldSeed,
-    day,
-    secretRouteUnlocked: state.flags.secretRouteUnlocked,
-    timeMinutes: 360,
-  }, state.dailyPlansByDay);
+  const activeTrap = state.playerTrapKit.activeTrap;
+  const existingPlan = state.dailyPlansByDay[String(day)];
+  const plan = existingPlan ?? generateDailyPlan({
+      rngVersion: state.rngVersion,
+      worldSeed: state.worldSeed,
+      day,
+      secretRouteUnlocked: state.flags.secretRouteUnlocked,
+      timeMinutes: 360,
+      canSetPlayerTrap: state.playerTrapKit.unlocked && !activeTrap,
+      hasCheckablePlayerTrap: Boolean(
+        activeTrap &&
+        (activeTrap.phase === "ready" || activeTrap.phase === "opened" || activeTrap.readyDay <= day),
+      ),
+    }, state.dailyPlansByDay);
   return {
     ...state,
     dailyPlansByDay: { ...state.dailyPlansByDay, [String(day)]: plan },
     observationProgressByDay: {
       ...state.observationProgressByDay,
-      [String(day)]: createObservationProgress(day, ["grandma-house"]),
+      [String(day)]: state.observationProgressByDay[String(day)] ?? createObservationProgress(day, ["grandma-house"]),
     },
   };
 };

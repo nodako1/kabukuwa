@@ -74,9 +74,9 @@ const atTree = (
 };
 
 describe("game engine", () => {
-  it("starts Version 4 at grandma's house at 6:00 with a daily plan", () => {
+  it("starts Version 5 at grandma's house at 6:00 with a daily plan", () => {
     const state = createInitialGame("fixed");
-    expect(state.schemaVersion).toBe(4);
+    expect(state.schemaVersion).toBe(5);
     expect(state.timeMinutes).toBe(360);
     expect(state.locationId).toBe("grandma-house");
     expect(state.field.fieldId).toBe("grandma-house");
