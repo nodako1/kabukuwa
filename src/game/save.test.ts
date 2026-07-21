@@ -8,7 +8,9 @@ import {
   LEGACY_MIGRATION_BACKUP_KEY,
   MIGRATION_BACKUP_KEY,
   SAVE_KEY,
+  VERSION5_MIGRATION_BACKUP_KEY,
   VERSION4_MIGRATION_BACKUP_KEY,
+  consumeSaveRepairNotice,
   deleteSave,
   gameStateSchema,
   loadGame,
@@ -16,7 +18,9 @@ import {
   version2GameStateSchema,
   version3GameStateSchema,
   version4GameStateSchema,
+  version5GameStateStructureSchema,
   type Version4GameState,
+  type Version5GameState,
   type StorageLike,
 } from "./save";
 
@@ -40,6 +44,7 @@ const asVersion2 = (state: GameState) => {
     observationJournalByDay: _journal,
     heardRumorDays: _rumors,
     morningBriefSeenDays: _briefs,
+    favoriteSpecimenIds: _favorites,
     ...legacy
   } = state;
   const { lastTransitionToken: _token, ...field } = legacy.field;
@@ -58,6 +63,7 @@ const asVersion3 = (state: GameState) => {
     observationJournalByDay: _journal,
     heardRumorDays: _rumors,
     morningBriefSeenDays: _briefs,
+    favoriteSpecimenIds: _favorites,
     ...legacy
   } = state;
   return { ...legacy, schemaVersion: 3 as const, contentVersion: 3 as const };
@@ -75,6 +81,7 @@ const asVersion4 = (state: GameState): Version4GameState => {
   const {
     playerTrapKit: _kit,
     activePlayerTrapInspectionId: _activePlayerTrap,
+    favoriteSpecimenIds: _favorites,
     ...withoutTrap
   } = state;
   const { playerTrapTutorialSeen: _playerTrapTutorial, ...flags } = withoutTrap.flags;
@@ -105,6 +112,21 @@ const asVersion4 = (state: GameState): Version4GameState => {
     observationProgressByDay,
     observationJournalByDay,
   } as Version4GameState;
+};
+
+const asVersion5 = (state: GameState): Version5GameState => {
+  const { favoriteSpecimenIds: _favorites, ...legacy } = state;
+  return {
+    ...legacy,
+    schemaVersion: 5,
+    contentVersion: 5,
+  } as Version5GameState;
+};
+
+const writeVersion5 = (storage: StorageLike, state: Version5GameState): string => {
+  const raw = JSON.stringify({ schemaVersion: 5, savedAt: new Date().toISOString(), state });
+  storage.setItem(SAVE_KEY, raw);
+  return raw;
 };
 
 const writeVersion4 = (storage: StorageLike, state: Version4GameState): string => {
@@ -184,7 +206,7 @@ describe("local save", () => {
     expect(restored.morningBriefSeenDays).toEqual([1]);
   });
 
-  it("migrates Version 4 into Version 5 without changing saved daily history", () => {
+  it("migrates Version 4 through Version 5 into Version 6 without changing saved daily history", () => {
     const storage = new MemoryStorage();
     let current = createInitialGame("v4-to-v5-complete");
     current = startDailyObservation({
@@ -219,7 +241,8 @@ describe("local save", () => {
     const raw = writeVersion4(storage, version4);
 
     const restored = loadGame(storage)!;
-    expect(restored.schemaVersion).toBe(5);
+    expect(restored.schemaVersion).toBe(6);
+    expect(restored.favoriteSpecimenIds).toEqual([]);
     expect(restored.dailyPlansByDay).toEqual(current.dailyPlansByDay);
     expect(restored.specimens[0].captureSource).toBe("fixed-banana");
     expect(restored.pendingOutcome?.type === "caught" && restored.pendingOutcome.specimen.captureSource)
@@ -237,7 +260,165 @@ describe("local save", () => {
     expect(loadGame(storage)?.playerTrapKit).toEqual({ unlocked: false, nextSequence: 1 });
   });
 
-  it("round-trips an opened player trap and deferred pickup in Version 5", () => {
+  it("migrates Version 5 into Version 6 with all existing state intact and an empty favorite list", () => {
+    const storage = new MemoryStorage();
+    const base = createInitialGame("v5-to-v6-complete");
+    const specimen = {
+      id: "v5-catch",
+      insectId: "miyama-stag" as const,
+      sizeMm: 72.3,
+      day: 1,
+      caughtAtMinutes: 615,
+      locationId: "oak-forest" as const,
+      spotId: "oak-tree-1",
+      treeId: "oak-tree-1",
+      inspectionPointId: "oak-tree-1:sap",
+      rankingEligible: true,
+      captureSource: "tree" as const,
+    };
+    const current: GameState = {
+      ...base,
+      specimens: [specimen],
+      favoriteSpecimenIds: [specimen.id],
+      metNpcIds: ["grandma"],
+      pendingOutcome: { type: "caught", specimen, isPersonalBest: true, isFirstCatch: true },
+    };
+    const version5 = asVersion5(current);
+    expect(version5GameStateStructureSchema.safeParse(version5).success).toBe(true);
+    const raw = writeVersion5(storage, version5);
+    storage.setItem(MIGRATION_BACKUP_KEY, "keep-original-pre-v5");
+
+    const restored = loadGame(storage)!;
+    expect(restored).toEqual({
+      ...version5,
+      schemaVersion: 6,
+      contentVersion: 6,
+      favoriteSpecimenIds: [],
+    });
+    expect(storage.getItem(VERSION5_MIGRATION_BACKUP_KEY)).toBe(raw);
+    expect(storage.getItem(MIGRATION_BACKUP_KEY)).toBe("keep-original-pre-v5");
+  });
+
+  it("preserves the first pre-v6 migration backup across repeated loads", () => {
+    const storage = new MemoryStorage();
+    const firstRaw = writeVersion5(storage, asVersion5(createInitialGame("first-v5-original")));
+    expect(loadGame(storage)?.worldSeed).toBe("first-v5-original");
+    expect(storage.getItem(VERSION5_MIGRATION_BACKUP_KEY)).toBe(firstRaw);
+
+    writeVersion5(storage, asVersion5(createInitialGame("later-v5-copy")));
+    expect(loadGame(storage)?.worldSeed).toBe("later-v5-copy");
+    expect(storage.getItem(VERSION5_MIGRATION_BACKUP_KEY)).toBe(firstRaw);
+  });
+
+  it("migrates a Version 5 close-up with a caught result and deferred pickup intact", () => {
+    const storage = new MemoryStorage();
+    const tree = treeById["oak-tree-1"];
+    let state: GameState = {
+      ...createInitialGame("v5-active-closeup"),
+      timeMinutes: 1075,
+      locationId: "oak-forest",
+      field: {
+        fieldId: "oak-forest",
+        x: tree.x,
+        y: tree.y + 70,
+        facing: "up",
+        lastSafeX: tree.x,
+        lastSafeY: tree.y + 70,
+        discoveredFieldIds: ["grandma-house", "oak-forest"],
+      },
+      visitCounters: { "oak-forest": 1 },
+      exploration: { locationId: "oak-forest", visitIndex: 1, period: "evening", searchedSpotIds: [] },
+    };
+    state = gameReducer(state, { type: "OPEN_TREE_INSPECTION", treeId: tree.id });
+    const specimen = {
+      id: "v5-pending-catch",
+      insectId: "japanese-rhino" as const,
+      sizeMm: 69.8,
+      day: 1,
+      caughtAtMinutes: 1080,
+      locationId: "oak-forest" as const,
+      spotId: tree.id,
+      treeId: tree.id,
+      inspectionPointId: tree.primaryPointId,
+      rankingEligible: true,
+      captureSource: "tree" as const,
+    };
+    state = {
+      ...state,
+      specimens: [specimen],
+      pendingOutcome: { type: "caught", specimen, isPersonalBest: true, isFirstCatch: true },
+    };
+    writeVersion5(storage, asVersion5(state));
+
+    const restored = loadGame(storage)!;
+    expect(restored.activeInspectionSessionId).toBe(state.activeInspectionSessionId);
+    expect(restored.pendingBoundaryEvent).toBe("pickup");
+    expect(restored.pendingOutcome).toEqual(state.pendingOutcome);
+    expect(restored.specimens).toEqual([specimen]);
+    expect(restored.favoriteSpecimenIds).toEqual([]);
+  });
+
+  it("keeps a favorite through the 20:00 deferred journal boundary and the next day", () => {
+    const storage = new MemoryStorage();
+    const tree = treeById["backyard-tree-1"];
+    let state: GameState = {
+      ...createInitialGame("favorite-day-boundary"),
+      timeMinutes: 1185,
+      phase: "evening",
+      locationId: "backyard",
+      field: {
+        fieldId: "backyard",
+        x: tree.x,
+        y: tree.y + 70,
+        facing: "up",
+        lastSafeX: tree.x,
+        lastSafeY: tree.y + 70,
+        discoveredFieldIds: ["grandma-house", "backyard"],
+      },
+      visitCounters: { backyard: 1 },
+      exploration: { locationId: "backyard", visitIndex: 1, period: "night", searchedSpotIds: [] },
+    };
+    state = gameReducer(state, { type: "OPEN_TREE_INSPECTION", treeId: tree.id });
+    expect(state.pendingBoundaryEvent).toBe("day-ended");
+    const caught = {
+      id: "day-boundary-favorite",
+      insectId: "saw-stag" as const,
+      sizeMm: 62.1,
+      day: 1,
+      caughtAtMinutes: 1200,
+      locationId: "backyard" as const,
+      spotId: tree.id,
+      treeId: tree.id,
+      inspectionPointId: tree.primaryPointId,
+      rankingEligible: true,
+      captureSource: "tree" as const,
+    };
+    state = {
+      ...state,
+      specimens: [caught],
+      pendingOutcome: { type: "caught", specimen: caught, isPersonalBest: true, isFirstCatch: true },
+      observationProgressByDay: {
+        ...state.observationProgressByDay,
+        "1": { ...state.observationProgressByDay["1"], capturedSpecimenIds: [caught.id] },
+      },
+    };
+    state = gameReducer(state, { type: "SET_SPECIMEN_FAVORITE", specimenId: caught.id, favorite: true });
+    saveGame(state, storage);
+
+    let restored = loadGame(storage)!;
+    expect(restored.favoriteSpecimenIds).toEqual([caught.id]);
+    restored = gameReducer(restored, { type: "ACKNOWLEDGE_OUTCOME" });
+    restored = gameReducer(restored, { type: "CLOSE_TREE_INSPECTION" });
+    expect(restored.phase).toBe("day-ended");
+    expect(restored.observationJournalByDay["1"].capturedSpecimenIds).toEqual([caught.id]);
+    expect(Object.keys(restored.observationJournalByDay)).toHaveLength(1);
+
+    const nextDay = gameReducer(restored, { type: "START_NEXT_DAY" });
+    expect(nextDay.day).toBe(2);
+    expect(nextDay.favoriteSpecimenIds).toEqual([caught.id]);
+  });
+
+  it("migrates an opened player trap, caught result, and deferred pickup from Version 5", () => {
     const storage = new MemoryStorage();
     const base = createInitialGame("active-player-trap-save");
     const trap = {
@@ -261,6 +442,19 @@ describe("local save", () => {
         ],
       },
     };
+    const caught = {
+      id: "player-trap-pending-catch",
+      insectId: "japanese-rhino" as const,
+      sizeMm: 70.4,
+      day: 2,
+      caughtAtMinutes: 1080,
+      locationId: "oak-forest" as const,
+      spotId: trap.id,
+      treeId: trap.treeId,
+      inspectionPointId: `${trap.treeId}:player-banana-trap`,
+      rankingEligible: true,
+      captureSource: "player-banana" as const,
+    };
     const state: GameState = {
       ...base,
       day: 2,
@@ -281,6 +475,8 @@ describe("local save", () => {
       playerTrapKit: { unlocked: true, nextSequence: 2, activeTrap: trap },
       activePlayerTrapInspectionId: trap.id,
       pendingBoundaryEvent: "pickup",
+      specimens: [caught],
+      pendingOutcome: { type: "caught", specimen: caught, isPersonalBest: true, isFirstCatch: true },
       dailyPlansByDay: {
         ...base.dailyPlansByDay,
         "2": { day: 2, natureId: "still-summer", themeId: "check-player-trap", rumorNpcId: "grandma", rumorId: "grandma:still-summer" },
@@ -290,12 +486,15 @@ describe("local save", () => {
         "2": { ...base.observationProgressByDay["1"], day: 2, checkedPlayerTrapIds: [trap.id] },
       },
     };
-    saveGame(state, storage);
-    const restored = loadGame(storage)!;
+    const raw = writeVersion5(storage, asVersion5(state));
+    let restored = loadGame(storage)!;
     expect(restored.activePlayerTrapInspectionId).toBe(trap.id);
     expect(restored.pendingBoundaryEvent).toBe("pickup");
     expect(restored.playerTrapKit.activeTrap).toEqual(trap);
+    expect(restored.pendingOutcome).toEqual(state.pendingOutcome);
+    expect(storage.getItem(VERSION5_MIGRATION_BACKUP_KEY)).toBe(raw);
 
+    restored = gameReducer(restored, { type: "ACKNOWLEDGE_OUTCOME" });
     const closed = gameReducer(restored, { type: "CLOSE_PLAYER_TRAP_INSPECTION", trapId: trap.id });
     expect(closed.phase).toBe("pickup");
     expect(closed.activePlayerTrapInspectionId).toBeUndefined();
@@ -308,7 +507,7 @@ describe("local save", () => {
     expect(gameReducer(closedRestored, { type: "COMPLETE_PICKUP" }).phase).toBe("evening");
   });
 
-  it("repairs a removed compatible tree without losing the rest of a Version 5 save", () => {
+  it("repairs a removed compatible tree while migrating a Version 5 save", () => {
     const storage = new MemoryStorage();
     const initial = createInitialGame("repair-player-trap-tree");
     const invalid: GameState = {
@@ -329,7 +528,7 @@ describe("local save", () => {
       },
       metNpcIds: ["grandma"],
     };
-    storage.setItem(SAVE_KEY, JSON.stringify({ schemaVersion: 5, savedAt: new Date().toISOString(), state: invalid }));
+    writeVersion5(storage, asVersion5(invalid));
     const restored = loadGame(storage)!;
     expect(restored.worldSeed).toBe(initial.worldSeed);
     expect(restored.metNpcIds).toEqual(["grandma"]);
@@ -359,14 +558,83 @@ describe("local save", () => {
         },
       },
     };
-    storage.setItem(SAVE_KEY, JSON.stringify({
-      schemaVersion: 5,
-      savedAt: new Date().toISOString(),
-      state: repairable,
-    }));
+    writeVersion5(storage, asVersion5(repairable));
 
     expect(loadGame(storage)?.playerTrapKit.activeTrap).toBeUndefined();
     expect(storage.getItem(MIGRATION_BACKUP_KEY)).toBe(originalPreV5);
+  });
+
+  it("does not overwrite an existing pre-v5 backup during a repeated Version 4 migration", () => {
+    const storage = new MemoryStorage();
+    storage.setItem(MIGRATION_BACKUP_KEY, "first-version-4-original");
+    writeVersion4(storage, asVersion4(createInitialGame("later-version-4")));
+    expect(loadGame(storage)?.worldSeed).toBe("later-version-4");
+    expect(storage.getItem(MIGRATION_BACKUP_KEY)).toBe("first-version-4-original");
+  });
+
+  it("repairs only duplicate and missing favorite references before strict validation", () => {
+    consumeSaveRepairNotice();
+    const storage = new MemoryStorage();
+    const base = createInitialGame("repair-favorite-refs");
+    const first = {
+      id: "first-favorite",
+      insectId: "japanese-rhino" as const,
+      sizeMm: 68.2,
+      day: 1,
+      caughtAtMinutes: 600,
+      locationId: "oak-forest" as const,
+      spotId: "oak-tree-1",
+      treeId: "oak-tree-1",
+      inspectionPointId: "oak-tree-1:sap",
+      rankingEligible: true,
+      captureSource: "tree" as const,
+    };
+    const second = { ...first, id: "second-favorite", sizeMm: 69.4 };
+    const pendingOutcome = { type: "caught" as const, specimen: second, isPersonalBest: true };
+    const repairable: GameState = {
+      ...base,
+      specimens: [first, second],
+      favoriteSpecimenIds: [second.id, "missing", second.id, first.id],
+      pendingOutcome,
+      metNpcIds: ["grandma"],
+    };
+    const backup = createInitialGame("must-not-roll-back");
+    storage.setItem(BACKUP_KEY, JSON.stringify({ schemaVersion: 6, savedAt: new Date().toISOString(), state: backup }));
+    storage.setItem(SAVE_KEY, JSON.stringify({ schemaVersion: 6, savedAt: new Date().toISOString(), state: repairable }));
+
+    const restored = loadGame(storage)!;
+    expect(restored.worldSeed).toBe("repair-favorite-refs");
+    expect(restored.favoriteSpecimenIds).toEqual([second.id, first.id]);
+    expect(restored.specimens).toEqual([first, second]);
+    expect(restored.pendingOutcome).toEqual(pendingOutcome);
+    expect(restored.metNpcIds).toEqual(["grandma"]);
+    expect(consumeSaveRepairNotice()).toContain("とっておき参照");
+    expect(consumeSaveRepairNotice()).toBeNull();
+  });
+
+  it("rejects duplicate specimen identities instead of silently repairing them", () => {
+    const storage = new MemoryStorage();
+    const valid = createInitialGame("duplicate-id-backup");
+    storage.setItem(BACKUP_KEY, JSON.stringify({ schemaVersion: 6, savedAt: new Date().toISOString(), state: valid }));
+    const specimen = {
+      id: "duplicate",
+      insectId: "saw-stag" as const,
+      sizeMm: 60,
+      day: 1,
+      caughtAtMinutes: 600,
+      locationId: "mixed-forest" as const,
+      spotId: "mixed-tree-1",
+      treeId: "mixed-tree-1",
+      inspectionPointId: "mixed-tree-1:sap",
+      rankingEligible: true,
+      captureSource: "tree" as const,
+    };
+    const invalid: GameState = {
+      ...createInitialGame("duplicate-id-current"),
+      specimens: [specimen, { ...specimen, sizeMm: 61 }],
+    };
+    storage.setItem(SAVE_KEY, JSON.stringify({ schemaVersion: 6, savedAt: new Date().toISOString(), state: invalid }));
+    expect(loadGame(storage)?.worldSeed).toBe("duplicate-id-backup");
   });
 
   it("rejects invalid player trap phase and duplicate observation IDs", () => {
@@ -414,6 +682,35 @@ describe("local save", () => {
     saveGame({ ...first, day: 2, revision: 1 }, storage);
     storage.setItem(SAVE_KEY, "not-json");
     expect(loadGame(storage)?.day).toBe(1);
+  });
+
+  it("does not replace a valid backup with corrupt current data during autosave", () => {
+    const storage = new MemoryStorage();
+    const validBackup = JSON.stringify({
+      schemaVersion: 6,
+      savedAt: new Date().toISOString(),
+      state: createInitialGame("protected-backup"),
+    });
+    storage.setItem(BACKUP_KEY, validBackup);
+    storage.setItem(SAVE_KEY, "broken-current");
+    saveGame(createInitialGame("new-current"), storage);
+    expect(storage.getItem(BACKUP_KEY)).toBe(validBackup);
+    expect(loadGame(storage)?.worldSeed).toBe("new-current");
+  });
+
+  it("returns a migrated Version 5 save even if the optional pre-v6 backup key cannot be read", () => {
+    const memory = new MemoryStorage();
+    const raw = writeVersion5(memory, asVersion5(createInitialGame("backup-read-blocked")));
+    const storage: StorageLike = {
+      getItem: (key) => {
+        if (key === VERSION5_MIGRATION_BACKUP_KEY) throw new Error("blocked optional key");
+        if (key === SAVE_KEY) return raw;
+        return null;
+      },
+      setItem: () => undefined,
+      removeItem: () => undefined,
+    };
+    expect(loadGame(storage)?.worldSeed).toBe("backup-read-blocked");
   });
 
   it("rejects a remote daytime state at or after 18:00 without a deferred inspection", () => {
@@ -502,7 +799,7 @@ describe("local save", () => {
     expect(version2GameStateSchema.safeParse(version2).success).toBe(true);
     writeVersion2(storage, version2);
     const restored = loadGame(storage)!;
-    expect(restored.schemaVersion).toBe(5);
+    expect(restored.schemaVersion).toBe(6);
     expect(restored.worldSeed).toBe("v2-full");
     expect(restored.specimens[0]).toMatchObject({
       id: "old-catch",
@@ -552,7 +849,7 @@ describe("local save", () => {
     expect(reopened.timeMinutes).toBe(600);
   });
 
-  it("migrates Version 1 progress through Version 2 into Version 5", () => {
+  it("migrates Version 1 progress through Version 2 into Version 6", () => {
     const storage = new MemoryStorage();
     const current = createInitialGame("legacy-test");
     const version2 = asVersion2({
@@ -569,7 +866,7 @@ describe("local save", () => {
       state: { ...withoutField, schemaVersion: 1, contentVersion: 1, flags: legacyFlags },
     }));
     const restored = loadGame(storage)!;
-    expect(restored.schemaVersion).toBe(5);
+    expect(restored.schemaVersion).toBe(6);
     expect(restored.npcTalkCounts.grandma).toBe(2);
     expect(restored.field.discoveredFieldIds).toEqual(expect.arrayContaining(["grandma-house", "shrine"]));
   });
@@ -582,7 +879,7 @@ describe("local save", () => {
     expect(loadGame(storage)?.worldSeed).toBe("backup-v2");
   });
 
-  it("migrates Version 3 into Version 5 without inferring earlier observation progress", () => {
+  it("migrates Version 3 into Version 6 without inferring earlier observation progress", () => {
     const storage = new MemoryStorage();
     const tree = treeById["oak-tree-1"];
     let state: GameState = {
@@ -632,7 +929,7 @@ describe("local save", () => {
     storage.setItem(SAVE_KEY, raw);
 
     const restored = loadGame(storage)!;
-    expect(restored.schemaVersion).toBe(5);
+    expect(restored.schemaVersion).toBe(6);
     expect(restored.activeInspectionSessionId).toBe(state.activeInspectionSessionId);
     expect(restored.pendingBoundaryEvent).toBe("pickup");
     expect(restored.flags.secretRouteUnlocked).toBe(true);
@@ -699,12 +996,14 @@ describe("local save", () => {
     const storage = new MemoryStorage();
     storage.setItem(SAVE_KEY, "current");
     storage.setItem(BACKUP_KEY, "backup");
+    storage.setItem(VERSION5_MIGRATION_BACKUP_KEY, "pre-v6");
     storage.setItem(MIGRATION_BACKUP_KEY, "pre-v4");
     storage.setItem(VERSION4_MIGRATION_BACKUP_KEY, "older-pre-v4");
     storage.setItem(LEGACY_MIGRATION_BACKUP_KEY, "pre-v3");
     deleteSave(storage);
     expect(storage.getItem(SAVE_KEY)).toBeNull();
     expect(storage.getItem(BACKUP_KEY)).toBeNull();
+    expect(storage.getItem(VERSION5_MIGRATION_BACKUP_KEY)).toBeNull();
     expect(storage.getItem(MIGRATION_BACKUP_KEY)).toBeNull();
     expect(storage.getItem(VERSION4_MIGRATION_BACKUP_KEY)).toBeNull();
     expect(storage.getItem(LEGACY_MIGRATION_BACKUP_KEY)).toBeNull();

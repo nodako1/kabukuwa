@@ -74,15 +74,117 @@ const atTree = (
 };
 
 describe("game engine", () => {
-  it("starts Version 5 at grandma's house at 6:00 with a daily plan", () => {
+  it("starts Version 6 at grandma's house at 6:00 with a daily plan", () => {
     const state = createInitialGame("fixed");
-    expect(state.schemaVersion).toBe(5);
+    expect(state.schemaVersion).toBe(6);
+    expect(state.favoriteSpecimenIds).toEqual([]);
     expect(state.timeMinutes).toBe(360);
     expect(state.locationId).toBe("grandma-house");
     expect(state.field.fieldId).toBe("grandma-house");
     expect(Object.keys(state.trapStates)).toEqual(expect.arrayContaining(["backyard-banana", "backyard-light"]));
     expect(state.dailyPlansByDay["1"]).toMatchObject({ day: 1 });
     expect(state.observationProgressByDay["1"].visitedFieldIds).toEqual(["grandma-house"]);
+  });
+
+  it("sets an existing specimen favorite idempotently without changing gameplay state", () => {
+    const base = createInitialGame("favorite-command");
+    const caught = {
+      id: "favorite-catch",
+      insectId: "japanese-rhino" as const,
+      sizeMm: 70.1,
+      day: 1,
+      caughtAtMinutes: 615,
+      locationId: "oak-forest" as const,
+      spotId: "oak-tree-1",
+      treeId: "oak-tree-1",
+      inspectionPointId: "oak-tree-1:sap",
+      rankingEligible: true,
+      captureSource: "tree" as const,
+    };
+    const outcome = { type: "caught" as const, specimen: caught, isPersonalBest: true, isFirstCatch: true };
+    const state: GameState = { ...base, specimens: [caught], pendingOutcome: outcome };
+    const revision = state.revision;
+    const progress = state.observationProgressByDay;
+    const journal = state.observationJournalByDay;
+    const trap = state.playerTrapKit;
+
+    const favorited = gameReducer(state, {
+      type: "SET_SPECIMEN_FAVORITE",
+      specimenId: caught.id,
+      favorite: true,
+    });
+    expect(favorited.favoriteSpecimenIds).toEqual([caught.id]);
+    expect(favorited.revision).toBe(revision + 1);
+    expect(favorited.timeMinutes).toBe(state.timeMinutes);
+    expect(favorited.pendingOutcome).toBe(outcome);
+    expect(favorited.observationProgressByDay).toBe(progress);
+    expect(favorited.observationJournalByDay).toBe(journal);
+    expect(favorited.playerTrapKit).toBe(trap);
+
+    expect(gameReducer(favorited, {
+      type: "SET_SPECIMEN_FAVORITE",
+      specimenId: caught.id,
+      favorite: true,
+    })).toBe(favorited);
+    expect(gameReducer(favorited, {
+      type: "SET_SPECIMEN_FAVORITE",
+      specimenId: "missing",
+      favorite: true,
+    })).toBe(favorited);
+
+    const removed = gameReducer(favorited, {
+      type: "SET_SPECIMEN_FAVORITE",
+      specimenId: caught.id,
+      favorite: false,
+    });
+    expect(removed.favoriteSpecimenIds).toEqual([]);
+    expect(gameReducer(removed, {
+      type: "SET_SPECIMEN_FAVORITE",
+      specimenId: caught.id,
+      favorite: false,
+    })).toBe(removed);
+  });
+
+  it("allows favorite commands during either close-up without changing the close-up", () => {
+    const caught = {
+      id: "closeup-favorite",
+      insectId: "saw-stag" as const,
+      sizeMm: 61,
+      day: 1,
+      caughtAtMinutes: 600,
+      locationId: "oak-forest" as const,
+      spotId: "oak-tree-1",
+      treeId: "oak-tree-1",
+      inspectionPointId: "oak-tree-1:sap",
+      rankingEligible: true,
+      captureSource: "tree" as const,
+    };
+    let treeState = gameReducer(atTree("oak-tree-1"), {
+      type: "OPEN_TREE_INSPECTION",
+      treeId: "oak-tree-1",
+    });
+    treeState = { ...treeState, specimens: [caught] };
+    const treeSession = treeState.inspectionSessions;
+    const favoritedTree = gameReducer(treeState, {
+      type: "SET_SPECIMEN_FAVORITE",
+      specimenId: caught.id,
+      favorite: true,
+    });
+    expect(favoritedTree.activeInspectionSessionId).toBe(treeState.activeInspectionSessionId);
+    expect(favoritedTree.inspectionSessions).toBe(treeSession);
+
+    const trapState: GameState = {
+      ...favoritedTree,
+      activeInspectionSessionId: undefined,
+      activePlayerTrapInspectionId: "active-trap",
+    };
+    const unfavoritedTrap = gameReducer(trapState, {
+      type: "SET_SPECIMEN_FAVORITE",
+      specimenId: caught.id,
+      favorite: false,
+    });
+    expect(unfavoritedTrap.activePlayerTrapInspectionId).toBe("active-trap");
+    expect(unfavoritedTrap.favoriteSpecimenIds).toEqual([]);
   });
 
   it("walks the complete clockwise loop and returns home in 40 minutes", () => {

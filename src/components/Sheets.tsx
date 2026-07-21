@@ -18,13 +18,25 @@ import {
 } from "../game/daily";
 import { getGrandmaHint, isLocationAvailable } from "../game/rules";
 import { playerTrapLocationId, treeIdFromPlayerTrapId } from "../game/playerTrap";
+import {
+  getCaptureSourceLabel,
+  getRankingStatusLabel,
+  getSpecimenDiscoveryLabel,
+} from "../game/collection";
 import { MockAdRewardProvider } from "../ports/AdRewardProvider";
-import type { AdRewardKind, FieldId, GameCommand, GameState, Outcome } from "../types/game";
+import type { AdRewardKind, FieldId, GameCommand, GameState, InsectId, Outcome } from "../types/game";
+import {
+  FavoriteSpecimenList,
+  SpeciesIndex,
+  SpeciesSpecimenList,
+  SpecimenDetail,
+} from "./SpecimenCollection";
 
 interface SheetProps {
   title: string;
   eyebrow?: string;
   onClose: () => void;
+  onEscape?: () => void;
   children: React.ReactNode;
   className?: string;
 }
@@ -44,6 +56,8 @@ const useModalFocusTrap = (
   onEscape?: () => void,
   dialogIsRoot = false,
 ) => {
+  const onEscapeRef = useRef(onEscape);
+  useEffect(() => { onEscapeRef.current = onEscape; }, [onEscape]);
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
@@ -66,9 +80,9 @@ const useModalFocusTrap = (
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && onEscape) {
+      if (event.key === "Escape" && onEscapeRef.current) {
         event.preventDefault();
-        onEscape();
+        onEscapeRef.current();
         return;
       }
       if (event.key !== "Tab") return;
@@ -94,13 +108,13 @@ const useModalFocusTrap = (
       backgroundElements.forEach((element, index) => { element.inert = previousInert[index]; });
       previouslyFocused?.focus();
     };
-  }, [dialogIsRoot, dialogRef, onEscape]);
+  }, [dialogIsRoot, dialogRef]);
 };
 
-const Sheet = ({ title, eyebrow, onClose, children, className = "" }: SheetProps) => {
+const Sheet = ({ title, eyebrow, onClose, onEscape = onClose, children, className = "" }: SheetProps) => {
   const titleId = useId();
   const sheetRef = useRef<HTMLElement>(null);
-  useModalFocusTrap(sheetRef, onClose);
+  useModalFocusTrap(sheetRef, onEscape);
 
   return (
     <div className="sheet-backdrop" role="presentation" onMouseDown={onClose}>
@@ -373,28 +387,6 @@ export const PlayerTrapTutorialSheet = ({ onClose }: { onClose: () => void }) =>
   </Sheet>
 );
 
-const InsectCollection = ({ state }: { state: GameState }) => (
-  <div className="card-list">
-    {insects.map((insect) => {
-      const catches = state.specimens.filter((specimen) => specimen.insectId === insect.id);
-      const best = catches.reduce((value, specimen) => Math.max(value, specimen.sizeMm), 0);
-      const found = catches.length > 0;
-      return (
-        <article className={`collection-card ${found ? "is-found" : "is-unknown"}`} key={insect.id}>
-          <div className="beetle-medallion" aria-hidden="true">
-            <i className={insect.family === "カブトムシ" ? "rhino-mark" : "stag-mark"} />
-          </div>
-          <div>
-            <small>レア度 {"●".repeat(insect.rarity)}{"○".repeat(5 - insect.rarity)}</small>
-            <h3>{found ? insect.name : "まだ見つけていない"}</h3>
-            <p>{found ? `${catches.length}匹 · 最大 ${best.toFixed(1)}mm` : insect.hint}</p>
-          </div>
-        </article>
-      );
-    })}
-  </div>
-);
-
 const ObservationNotebook = ({ state }: { state: GameState }) => {
   const plan = getCurrentDailyPlan(state);
   const progress = getCurrentObservationProgress(state);
@@ -532,33 +524,141 @@ const ObservationNotebook = ({ state }: { state: GameState }) => {
   );
 };
 
-export const EncyclopediaSheet = ({ state, onClose }: { state: GameState; onClose: () => void }) => {
-  const [tab, setTab] = useState<"insects" | "journal">("insects");
+type EncyclopediaTab = "insects" | "favorites" | "journal";
+type CollectionPage =
+  | { type: "index" }
+  | { type: "species"; insectId: InsectId }
+  | { type: "specimen"; specimenId: string; returnTo: "species" | "favorites" };
+
+const focusCollectionTarget = (...keys: string[]) => {
+  requestAnimationFrame(() => {
+    const candidates = Array.from(document.querySelectorAll<HTMLElement>("[data-collection-focus]"));
+    const target = keys
+      .map((key) => candidates.find((element) => element.dataset.collectionFocus === key))
+      .find((element): element is HTMLElement => Boolean(element));
+    target?.scrollIntoView({ block: "nearest" });
+    target?.focus({ preventScroll: true });
+  });
+};
+
+export const EncyclopediaSheet = ({
+  state,
+  dispatch,
+  onClose,
+}: {
+  state: GameState;
+  dispatch: (command: GameCommand) => void;
+  onClose: () => void;
+}) => {
+  const [tab, setTab] = useState<EncyclopediaTab>("insects");
+  const [page, setPage] = useState<CollectionPage>({ type: "index" });
+  const pageRef = useRef<CollectionPage>(page);
+  const onCloseRef = useRef(onClose);
+  const closingRef = useRef(false);
+  const historyKeyRef = useRef(`book-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`);
   const tabsId = useId();
-  const tabRefs = useRef<Record<"insects" | "journal", HTMLButtonElement | null>>({
+  const tabRefs = useRef<Record<EncyclopediaTab, HTMLButtonElement | null>>({
     insects: null,
+    favorites: null,
     journal: null,
   });
-  const tabIds = ["insects", "journal"] as const;
+  const tabIds: EncyclopediaTab[] = ["insects", "favorites", "journal"];
+
+  useEffect(() => { pageRef.current = page; }, [page]);
+  useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
+
+  const updatePage = (next: CollectionPage) => {
+    pageRef.current = next;
+    setPage(next);
+  };
+  const navigateUp = () => {
+    const current = pageRef.current;
+    if (current.type === "index") return false;
+    if (current.type === "species") {
+      updatePage({ type: "index" });
+      focusCollectionTarget(`species-${current.insectId}`);
+      return true;
+    }
+    const specimen = state.specimens.find((candidate) => candidate.id === current.specimenId);
+    if (current.returnTo === "species" && specimen) {
+      updatePage({ type: "species", insectId: specimen.insectId });
+      focusCollectionTarget(`specimen-${current.specimenId}`);
+    } else {
+      updatePage({ type: "index" });
+      focusCollectionTarget(`specimen-${current.specimenId}`, "favorites-list", "favorites-empty");
+    }
+    return true;
+  };
+
+  useEffect(() => {
+    const historyKey = historyKeyRef.current;
+    if (window.history.state?.kabukuwaBook !== historyKey) {
+      window.history.pushState({ ...window.history.state, kabukuwaBook: historyKey }, "");
+    }
+    const handlePopState = () => {
+      if (closingRef.current) {
+        onCloseRef.current();
+        return;
+      }
+      if (pageRef.current.type === "index") {
+        onCloseRef.current();
+        return;
+      }
+      navigateUp();
+      window.history.pushState({ ...window.history.state, kabukuwaBook: historyKey }, "");
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  // The sentinel is intentionally installed once for this modal instance.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const closeAll = () => {
+    if (window.history.state?.kabukuwaBook === historyKeyRef.current) {
+      closingRef.current = true;
+      window.history.back();
+    } else {
+      onClose();
+    }
+  };
+  const handleEscape = () => {
+    if (!navigateUp()) closeAll();
+  };
+  const selectTab = (nextTab: EncyclopediaTab) => {
+    setTab(nextTab);
+    updatePage({ type: "index" });
+  };
   const handleTabKeyDown = (
     event: React.KeyboardEvent<HTMLButtonElement>,
-    currentTab: (typeof tabIds)[number],
+    currentTab: EncyclopediaTab,
   ) => {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
     event.preventDefault();
     const currentIndex = tabIds.indexOf(currentTab);
     const offset = event.key === "ArrowRight" ? 1 : -1;
     const nextTab = tabIds[(currentIndex + offset + tabIds.length) % tabIds.length];
-    setTab(nextTab);
+    selectTab(nextTab);
     tabRefs.current[nextTab]?.focus();
   };
+  const specimen = page.type === "specimen"
+    ? state.specimens.find((candidate) => candidate.id === page.specimenId)
+    : undefined;
+  const activeSpeciesId = page.type === "species"
+    ? page.insectId
+    : page.type === "specimen" && page.returnTo === "species"
+      ? specimen?.insectId
+      : undefined;
+
   return (
     <Sheet
       title="カブクワ図鑑"
       eyebrow={tab === "insects"
         ? `${new Set(state.specimens.map((item) => item.insectId)).size} / ${insects.length}種`
-        : `夏休み ${state.day}日目`}
-      onClose={onClose}
+        : tab === "favorites"
+          ? `${state.favoriteSpecimenIds.length}匹のとっておき`
+          : `夏休み ${state.day}日目`}
+      onClose={closeAll}
+      onEscape={handleEscape}
       className="encyclopedia-sheet"
     >
       <div className="book-tabs" role="tablist" aria-label="図鑑のページ">
@@ -570,9 +670,20 @@ export const EncyclopediaSheet = ({ state, onClose }: { state: GameState; onClos
           aria-selected={tab === "insects"}
           tabIndex={tab === "insects" ? 0 : -1}
           className={tab === "insects" ? "is-active" : ""}
-          onClick={() => setTab("insects")}
+          onClick={() => selectTab("insects")}
           onKeyDown={(event) => handleTabKeyDown(event, "insects")}
         >虫図鑑</button>
+        <button
+          ref={(element) => { tabRefs.current.favorites = element; }}
+          id={`${tabsId}-favorites-tab`}
+          role="tab"
+          aria-controls={`${tabsId}-favorites-panel`}
+          aria-selected={tab === "favorites"}
+          tabIndex={tab === "favorites" ? 0 : -1}
+          className={tab === "favorites" ? "is-active" : ""}
+          onClick={() => selectTab("favorites")}
+          onKeyDown={(event) => handleTabKeyDown(event, "favorites")}
+        >とっておき</button>
         <button
           ref={(element) => { tabRefs.current.journal = element; }}
           id={`${tabsId}-journal-tab`}
@@ -581,9 +692,9 @@ export const EncyclopediaSheet = ({ state, onClose }: { state: GameState; onClos
           aria-selected={tab === "journal"}
           tabIndex={tab === "journal" ? 0 : -1}
           className={tab === "journal" ? "is-active" : ""}
-          onClick={() => setTab("journal")}
+          onClick={() => selectTab("journal")}
           onKeyDown={(event) => handleTabKeyDown(event, "journal")}
-        >夏休み観察ノート</button>
+        >観察ノート</button>
       </div>
       <div
         id={`${tabsId}-insects-panel`}
@@ -592,7 +703,45 @@ export const EncyclopediaSheet = ({ state, onClose }: { state: GameState; onClos
         tabIndex={0}
         hidden={tab !== "insects"}
       >
-        <InsectCollection state={state} />
+        {page.type === "index" && (
+          <SpeciesIndex
+            state={state}
+            onOpenSpecies={(insectId) => updatePage({ type: "species", insectId })}
+          />
+        )}
+        {activeSpeciesId && (
+          <div hidden={page.type !== "species"}>
+            <SpeciesSpecimenList
+              key={activeSpeciesId}
+              state={state}
+              insectId={activeSpeciesId}
+              onBack={navigateUp}
+              onOpenSpecimen={(specimenId) => updatePage({ type: "specimen", specimenId, returnTo: "species" })}
+            />
+          </div>
+        )}
+        {page.type === "specimen" && page.returnTo === "species" && specimen && (
+          <SpecimenDetail state={state} specimen={specimen} dispatch={dispatch} onBack={navigateUp} />
+        )}
+      </div>
+      <div
+        id={`${tabsId}-favorites-panel`}
+        role="tabpanel"
+        aria-labelledby={`${tabsId}-favorites-tab`}
+        tabIndex={0}
+        hidden={tab !== "favorites"}
+      >
+        {(page.type === "index" || (page.type === "specimen" && page.returnTo === "favorites")) && (
+          <div hidden={page.type !== "index"}>
+            <FavoriteSpecimenList
+              state={state}
+              onOpenSpecimen={(specimenId) => updatePage({ type: "specimen", specimenId, returnTo: "favorites" })}
+            />
+          </div>
+        )}
+        {page.type === "specimen" && page.returnTo === "favorites" && specimen && (
+          <SpecimenDetail state={state} specimen={specimen} dispatch={dispatch} onBack={navigateUp} />
+        )}
       </div>
       <div
         id={`${tabsId}-journal-panel`}
@@ -697,7 +846,17 @@ export const RewardSheet = ({
   );
 };
 
-export const OutcomeSheet = ({ outcome, onClose }: { outcome: Outcome; onClose: () => void }) => {
+export const OutcomeSheet = ({
+  state,
+  outcome,
+  dispatch,
+  onClose,
+}: {
+  state: GameState;
+  outcome: Outcome;
+  dispatch: (command: GameCommand) => void;
+  onClose: () => void;
+}) => {
   const [catchRevealed, setCatchRevealed] = useState(outcome.type !== "caught");
   useEffect(() => {
     if (outcome.type !== "caught") {
@@ -718,6 +877,7 @@ export const OutcomeSheet = ({ outcome, onClose }: { outcome: Outcome; onClose: 
     );
   }
   const title = getOutcomeTitle(outcome);
+  const favorite = outcome.type === "caught" && state.favoriteSpecimenIds.includes(outcome.specimen.id);
   return (
     <Sheet
       title={title}
@@ -743,24 +903,29 @@ export const OutcomeSheet = ({ outcome, onClose }: { outcome: Outcome; onClose: 
             <div><dt>場所</dt><dd>{locationById[outcome.specimen.locationId].name}</dd></div>
             <div>
               <dt>見つけた所</dt>
-              <dd>
-                {outcome.specimen.treeId && treeById[outcome.specimen.treeId]
-                  ? outcome.specimen.captureSource === "player-banana"
-                    ? `${treeById[outcome.specimen.treeId].label}・自分で仕掛けたバナナトラップ`
-                    : `${treeById[outcome.specimen.treeId].label}・${treeById[outcome.specimen.treeId].inspectionPoints.find((point) => point.id === outcome.specimen.inspectionPointId)?.label ?? "木のそば"}`
-                  : "木のそば"}
-              </dd>
+              <dd>{getSpecimenDiscoveryLabel(outcome.specimen)}</dd>
             </div>
+            <div><dt>捕獲元</dt><dd>{getCaptureSourceLabel(outcome.specimen.captureSource)}</dd></div>
             <div><dt>記録</dt><dd>{outcome.specimen.day}日目 {formatTime(outcome.specimen.caughtAtMinutes)}</dd></div>
           </dl>
           <p>大きさは広告効果に左右されません。</p>
           <div className={`ranking-note ${outcome.specimen.rankingEligible ? "is-eligible" : "is-assisted"}`}>
-            {outcome.specimen.rankingEligible
-              ? outcome.specimen.captureSource === "player-banana"
-                ? "自分で仕掛けた通常トラップ：将来のランキング対象"
-                : "自然出現：将来のランキング対象"
-              : "出現率アップで追加出現：図鑑・採集記録のみ"}
+            {getRankingStatusLabel(outcome.specimen)}
           </div>
+          <button
+            type="button"
+            className={`favorite-button result-favorite-button ${favorite ? "is-favorite" : ""}`}
+            aria-pressed={favorite}
+            aria-label={favorite ? "とっておきから外す" : "とっておきにする"}
+            onClick={() => dispatch({
+              type: "SET_SPECIMEN_FAVORITE",
+              specimenId: outcome.specimen.id,
+              favorite: !favorite,
+            })}
+          >
+            <span aria-hidden="true">{favorite ? "★" : "☆"}</span>
+            {favorite ? "とっておきにした" : "とっておきにする"}
+          </button>
         </div>
       )}
       {outcome.type === "empty" && <p className="empty-result">{outcome.text}</p>}

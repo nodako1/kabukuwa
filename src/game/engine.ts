@@ -86,8 +86,8 @@ const fieldStateAt = (
 };
 
 export const createInitialGame = (seed = `summer-${Date.now().toString(36)}`): GameState => ({
-  schemaVersion: 5,
-  contentVersion: 5,
+  schemaVersion: 6,
+  contentVersion: 6,
   rngVersion: 1,
   worldSeed: seed,
   revision: 0,
@@ -98,6 +98,7 @@ export const createInitialGame = (seed = `summer-${Date.now().toString(36)}`): G
   field: fieldStateAt("grandma-house", "start"),
   visitCounters: {},
   specimens: [],
+  favoriteSpecimenIds: [],
   npcTalkCounts: {},
   metNpcIds: [],
   flags: {
@@ -685,6 +686,22 @@ const recoverPlayerTrap = (state: GameState, trapId: string): GameState => {
   }));
 };
 
+const setSpecimenFavorite = (
+  state: GameState,
+  specimenId: string,
+  favorite: boolean,
+): GameState => {
+  if (!state.specimens.some((specimen) => specimen.id === specimenId)) return state;
+  const alreadyFavorite = state.favoriteSpecimenIds.includes(specimenId);
+  if (alreadyFavorite === favorite) return state;
+  return withRevision({
+    ...state,
+    favoriteSpecimenIds: favorite
+      ? [...state.favoriteSpecimenIds, specimenId]
+      : state.favoriteSpecimenIds.filter((id) => id !== specimenId),
+  });
+};
+
 const discoverTreeClue = (
   state: GameState,
   command: Extract<GameCommand, { type: "DISCOVER_TREE_CLUE" }>,
@@ -849,6 +866,7 @@ export const gameReducer = (state: GameState, command: GameCommand): GameState =
   if (
     state.pendingOutcome &&
     command.type !== "ACKNOWLEDGE_OUTCOME" &&
+    command.type !== "SET_SPECIMEN_FAVORITE" &&
     command.type !== "RESET_GAME"
   ) {
     return state;
@@ -859,6 +877,7 @@ export const gameReducer = (state: GameState, command: GameCommand): GameState =
       "VIEW_INSPECTION_POINT",
       "CATCH_INSPECTION_ENCOUNTER",
       "CLOSE_TREE_INSPECTION",
+      "SET_SPECIMEN_FAVORITE",
       "ACKNOWLEDGE_OUTCOME",
       "RESET_GAME",
     ].includes(command.type)
@@ -869,6 +888,7 @@ export const gameReducer = (state: GameState, command: GameCommand): GameState =
       "CATCH_PLAYER_TRAP_ENCOUNTER",
       "CLOSE_PLAYER_TRAP_INSPECTION",
       "RECOVER_PLAYER_TRAP",
+      "SET_SPECIMEN_FAVORITE",
       "ACKNOWLEDGE_OUTCOME",
       "RESET_GAME",
     ].includes(command.type)
@@ -895,6 +915,8 @@ export const gameReducer = (state: GameState, command: GameCommand): GameState =
       return closePlayerTrapInspection(state, command.trapId);
     case "RECOVER_PLAYER_TRAP":
       return recoverPlayerTrap(state, command.trapId);
+    case "SET_SPECIMEN_FAVORITE":
+      return setSpecimenFavorite(state, command.specimenId, command.favorite);
     case "DISCOVER_TREE_CLUE":
       if (state.phase === "pickup" || state.phase === "day-ended") return state;
       return discoverTreeClue(state, command);

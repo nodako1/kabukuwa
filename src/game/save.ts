@@ -15,12 +15,23 @@ import { getFieldCollisionRects, isPositionWalkable } from "./field";
 import { commitInspectionSession, generateInspectionSession } from "./inspection";
 import { isFieldExitAvailable } from "./rules";
 import { finalizeObservationJournal, migrateDailyRecords } from "./daily";
+import { normalizeFavoriteSpecimenIds } from "./collection";
 
 export const SAVE_KEY = "kabukuwa.save.current";
 export const BACKUP_KEY = "kabukuwa.save.backup";
+export const VERSION5_MIGRATION_BACKUP_KEY = "kabukuwa.save.pre-v6";
 export const MIGRATION_BACKUP_KEY = "kabukuwa.save.pre-v5";
 export const VERSION4_MIGRATION_BACKUP_KEY = "kabukuwa.save.pre-v4";
 export const LEGACY_MIGRATION_BACKUP_KEY = "kabukuwa.save.pre-v3";
+
+let pendingSaveRepairNotice: string | null = null;
+const knownValidRawByStorage = new WeakMap<StorageLike, string>();
+
+export const consumeSaveRepairNotice = (): string | null => {
+  const notice = pendingSaveRepairNotice;
+  pendingSaveRepairNotice = null;
+  return notice;
+};
 
 export interface StorageLike {
   getItem(key: string): string | null;
@@ -496,7 +507,7 @@ const playerTrapKitSchema = z.object({
   activeTrap: playerTrapStateSchema.optional(),
 });
 
-export const gameStateStructureSchema = z.object({
+export const version5GameStateStructureSchema = z.object({
   schemaVersion: z.literal(5),
   contentVersion: z.literal(5),
   ...commonStateShape,
@@ -574,16 +585,45 @@ const playerTrapSemanticRefinement = (state: GameState, context: z.RefinementCtx
 
 };
 
+export const version5GameStateSchema = version5GameStateStructureSchema.superRefine((state, context) => {
+  semanticRefinement(state as unknown as GameState, context);
+  dailySemanticRefinement(state as unknown as GameState, context);
+  playerTrapSemanticRefinement(state as unknown as GameState, context);
+});
+
+export const gameStateStructureSchema = version5GameStateStructureSchema.extend({
+  schemaVersion: z.literal(6),
+  contentVersion: z.literal(6),
+  favoriteSpecimenIds: z.array(z.string()),
+});
+
+const favoriteSemanticRefinement = (state: GameState, context: z.RefinementCtx) => {
+  const invalid = (message: string) => context.addIssue({ code: "custom", message });
+  const specimenIds = state.specimens.map((specimen) => specimen.id);
+  const uniqueSpecimenIds = new Set(specimenIds);
+  if (uniqueSpecimenIds.size !== specimenIds.length) {
+    invalid("specimen ids must be unique");
+  }
+  if (new Set(state.favoriteSpecimenIds).size !== state.favoriteSpecimenIds.length) {
+    invalid("favorite specimen ids must be unique");
+  }
+  if (state.favoriteSpecimenIds.some((id) => !uniqueSpecimenIds.has(id))) {
+    invalid("favorite specimen ids must reference existing specimens");
+  }
+};
+
 export const gameStateSchema = gameStateStructureSchema.superRefine((state, context) => {
   semanticRefinement(state as GameState, context);
   dailySemanticRefinement(state as GameState, context);
   playerTrapSemanticRefinement(state as GameState, context);
+  favoriteSemanticRefinement(state as GameState, context);
 });
 
 type LegacyGameState = z.infer<typeof legacyGameStateSchema>;
 type Version2GameState = z.infer<typeof version2GameStateSchema>;
 type Version3GameState = z.infer<typeof version3GameStateSchema>;
 export type Version4GameState = z.infer<typeof version4GameStateSchema>;
+export type Version5GameState = z.infer<typeof version5GameStateStructureSchema>;
 
 const nearestSafePoint = (
   fieldId: FieldId,
@@ -702,7 +742,7 @@ const migrateOutcome = (
   ? { ...outcome, specimen: migrateSpecimen(outcome.specimen) }
   : outcome as Outcome | undefined;
 
-export const migrateVersion4GameState = (legacy: Version4GameState): GameState => repairPlayerPosition({
+const migrateVersion4ToVersion5 = (legacy: Version4GameState): Version5GameState => repairPlayerPosition({
   ...legacy,
   schemaVersion: 5,
   contentVersion: 5,
@@ -731,7 +771,17 @@ export const migrateVersion4GameState = (legacy: Version4GameState): GameState =
       checkedPlayerTrapIds: [],
     }]),
   ),
+} as unknown as Version5GameState);
+
+export const migrateVersion5GameState = (legacy: Version5GameState): GameState => repairPlayerPosition({
+  ...legacy,
+  schemaVersion: 6,
+  contentVersion: 6,
+  favoriteSpecimenIds: [],
 } as GameState);
+
+export const migrateVersion4GameState = (legacy: Version4GameState): GameState =>
+  migrateVersion5GameState(migrateVersion4ToVersion5(legacy));
 
 export const migrateVersion2GameState = (legacy: Version2GameState): GameState => {
   const version3Like = {
@@ -801,9 +851,14 @@ export const migrateVersion3GameState = (legacy: Version3GameState): GameState =
 };
 
 const saveEnvelopeStructureSchema = z.object({
-  schemaVersion: z.literal(5),
+  schemaVersion: z.literal(6),
   savedAt: z.string(),
   state: gameStateStructureSchema,
+});
+const version5SaveEnvelopeStructureSchema = z.object({
+  schemaVersion: z.literal(5),
+  savedAt: z.string(),
+  state: version5GameStateStructureSchema,
 });
 const version4SaveEnvelopeSchema = z.object({
   schemaVersion: z.literal(4),
@@ -837,7 +892,7 @@ const browserStorage = (): StorageLike | undefined => {
 
 interface ParsedState {
   state: GameState;
-  needsPreV5Backup: boolean;
+  migrationBackupKey?: typeof VERSION5_MIGRATION_BACKUP_KEY | typeof MIGRATION_BACKUP_KEY;
 }
 
 const repairPlayerTrapContent = (state: GameState): { state: GameState; repaired: boolean } => {
@@ -890,6 +945,18 @@ const repairPlayerTrapContent = (state: GameState): { state: GameState; repaired
   return { state: repaired, repaired: true };
 };
 
+const repairFavoriteReferences = (state: GameState): { state: GameState; repaired: boolean } => {
+  const normalized = normalizeFavoriteSpecimenIds(state.favoriteSpecimenIds, state.specimens);
+  if (!normalized.repaired) return { state, repaired: false };
+  return {
+    repaired: true,
+    state: {
+      ...state,
+      favoriteSpecimenIds: normalized.ids,
+    },
+  };
+};
+
 const parseSavedState = (raw: string | null): ParsedState | null => {
   if (!raw) return null;
   try {
@@ -897,24 +964,39 @@ const parseSavedState = (raw: string | null): ParsedState | null => {
     const current = saveEnvelopeStructureSchema.safeParse(parsed);
     if (current.success) {
       const contentRepair = repairPlayerTrapContent(current.data.state as GameState);
-      const repaired = repairPlayerPosition(contentRepair.state);
+      const favoriteRepair = repairFavoriteReferences(contentRepair.state);
+      const repaired = repairPlayerPosition(favoriteRepair.state);
       const checked = gameStateSchema.safeParse(repaired);
+      if (checked.success && favoriteRepair.repaired) {
+        pendingSaveRepairNotice = "見つからないとっておき参照だけを整え、捕まえた虫の記録はそのまま残しました。";
+      }
       return checked.success
-        ? { state: checked.data as GameState, needsPreV5Backup: false }
+        ? { state: checked.data as GameState }
+        : null;
+    }
+    const version5 = version5SaveEnvelopeStructureSchema.safeParse(parsed);
+    if (version5.success) {
+      const migrated = migrateVersion5GameState(version5.data.state as Version5GameState);
+      const contentRepair = repairPlayerTrapContent(migrated);
+      const checked = gameStateSchema.safeParse(repairPlayerPosition(contentRepair.state));
+      return checked.success
+        ? { state: checked.data as GameState, migrationBackupKey: VERSION5_MIGRATION_BACKUP_KEY }
         : null;
     }
     const version4 = version4SaveEnvelopeSchema.safeParse(parsed);
     if (version4.success) {
       const migrated = migrateVersion4GameState(version4.data.state);
       const checked = gameStateSchema.safeParse(migrated);
-      return checked.success ? { state: checked.data as GameState, needsPreV5Backup: true } : null;
+      return checked.success
+        ? { state: checked.data as GameState, migrationBackupKey: MIGRATION_BACKUP_KEY }
+        : null;
     }
     const version3 = version3SaveEnvelopeSchema.safeParse(parsed);
     if (version3.success) {
       const migrated = migrateVersion3GameState(version3.data.state);
       const checked = gameStateSchema.safeParse(migrated);
       return checked.success
-        ? { state: repairPlayerPosition(checked.data as GameState), needsPreV5Backup: true }
+        ? { state: repairPlayerPosition(checked.data as GameState), migrationBackupKey: MIGRATION_BACKUP_KEY }
         : null;
     }
     const version2 = version2SaveEnvelopeSchema.safeParse(parsed);
@@ -922,7 +1004,7 @@ const parseSavedState = (raw: string | null): ParsedState | null => {
       const migrated = migrateVersion2GameState(version2.data.state);
       const checked = gameStateSchema.safeParse(migrated);
       return checked.success
-        ? { state: repairPlayerPosition(checked.data as GameState), needsPreV5Backup: true }
+        ? { state: repairPlayerPosition(checked.data as GameState), migrationBackupKey: MIGRATION_BACKUP_KEY }
         : null;
     }
     const legacy = legacySaveEnvelopeSchema.safeParse(parsed);
@@ -930,10 +1012,23 @@ const parseSavedState = (raw: string | null): ParsedState | null => {
     const migrated = migrateVersion2GameState(migrateLegacyGameState(legacy.data.state));
     const checked = gameStateSchema.safeParse(migrated);
     return checked.success
-      ? { state: repairPlayerPosition(checked.data as GameState), needsPreV5Backup: true }
+      ? { state: repairPlayerPosition(checked.data as GameState), migrationBackupKey: MIGRATION_BACKUP_KEY }
       : null;
   } catch {
     return null;
+  }
+};
+
+const preserveMigrationBackup = (
+  storage: StorageLike,
+  key: ParsedState["migrationBackupKey"],
+  raw: string | null,
+) => {
+  if (!key || !raw) return;
+  try {
+    if (storage.getItem(key) === null) storage.setItem(key, raw);
+  } catch {
+    // A valid save remains playable even when the optional migration backup cannot be written.
   }
 };
 
@@ -943,23 +1038,15 @@ export const loadGame = (storage = browserStorage()): GameState | null => {
     const currentRaw = storage.getItem(SAVE_KEY);
     const current = parseSavedState(currentRaw);
     if (current) {
-      if (current.needsPreV5Backup && currentRaw) {
-        try {
-          storage.setItem(MIGRATION_BACKUP_KEY, currentRaw);
-        } catch {
-          // A valid save remains playable even when the optional migration backup cannot be written.
-        }
-      }
+      preserveMigrationBackup(storage, current.migrationBackupKey, currentRaw);
+      if (currentRaw) knownValidRawByStorage.set(storage, currentRaw);
       return current.state;
     }
     const backupRaw = storage.getItem(BACKUP_KEY);
     const backup = parseSavedState(backupRaw);
-    if (backup?.needsPreV5Backup && backupRaw) {
-      try {
-        storage.setItem(MIGRATION_BACKUP_KEY, backupRaw);
-      } catch {
-        // A valid backup remains playable even when the optional migration copy cannot be written.
-      }
+    if (backup) {
+      preserveMigrationBackup(storage, backup.migrationBackupKey, backupRaw);
+      if (backupRaw) knownValidRawByStorage.set(storage, backupRaw);
     }
     return backup?.state ?? null;
   } catch {
@@ -971,11 +1058,10 @@ export const saveGame = (state: GameState, storage = browserStorage()): void => 
   if (!storage) return;
   try {
     const current = storage.getItem(SAVE_KEY);
-    if (current) storage.setItem(BACKUP_KEY, current);
-    storage.setItem(
-      SAVE_KEY,
-      JSON.stringify({ schemaVersion: 5, savedAt: new Date().toISOString(), state }),
-    );
+    if (current && knownValidRawByStorage.get(storage) === current) storage.setItem(BACKUP_KEY, current);
+    const nextRaw = JSON.stringify({ schemaVersion: 6, savedAt: new Date().toISOString(), state });
+    storage.setItem(SAVE_KEY, nextRaw);
+    knownValidRawByStorage.set(storage, nextRaw);
   } catch {
     // Saving is best-effort. Storage restrictions or quota errors must not stop the game.
   }
@@ -986,9 +1072,11 @@ export const deleteSave = (storage = browserStorage()): void => {
   try {
     storage.removeItem(SAVE_KEY);
     storage.removeItem(BACKUP_KEY);
+    storage.removeItem(VERSION5_MIGRATION_BACKUP_KEY);
     storage.removeItem(MIGRATION_BACKUP_KEY);
     storage.removeItem(VERSION4_MIGRATION_BACKUP_KEY);
     storage.removeItem(LEGACY_MIGRATION_BACKUP_KEY);
+    knownValidRawByStorage.delete(storage);
   } catch {
     // Ignore browser storage restrictions.
   }
