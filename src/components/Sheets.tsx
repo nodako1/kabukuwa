@@ -536,6 +536,7 @@ const focusCollectionTarget = (...keys: string[]) => {
     const target = keys
       .map((key) => candidates.find((element) => element.dataset.collectionFocus === key))
       .find((element): element is HTMLElement => Boolean(element));
+    target?.scrollIntoView({ block: "nearest" });
     target?.focus({ preventScroll: true });
   });
 };

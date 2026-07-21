@@ -271,7 +271,7 @@ export const SpecimenDetail = ({
   const headingId = useId();
   const headingRef = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
-    headingRef.current?.focus({ preventScroll: true });
+    headingRef.current?.focus();
   }, [specimen.id]);
   return (
     <section className="specimen-detail" aria-labelledby={headingId}>
