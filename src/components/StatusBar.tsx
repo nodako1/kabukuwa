@@ -1,4 +1,4 @@
-import { locationById } from "../data/locations";
+import { fieldById } from "../data/fields";
 import { DAY_END, DAY_START, formatTime, getPeriodLabel, getTimePeriod } from "../game/clock";
 import type { GameState } from "../types/game";
 
@@ -10,7 +10,7 @@ export const StatusBar = ({ state }: { state: GameState }) => {
       <div className="status-main">
         <div>
           <span className="day-label">夏休み {state.day}日目</span>
-          <strong>{locationById[state.locationId].name}</strong>
+          <strong>{fieldById[state.field.fieldId].name}</strong>
         </div>
         <div className="clock" aria-label={`現在時刻 ${formatTime(state.timeMinutes)}`}>
           <small>{getPeriodLabel(getTimePeriod(state.timeMinutes))}</small>

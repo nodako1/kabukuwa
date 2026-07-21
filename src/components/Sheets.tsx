@@ -1,10 +1,11 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { fields } from "../data/fields";
 import { insects, insectById } from "../data/insects";
 import { locationById } from "../data/locations";
 import { npcs, npcById } from "../data/npcs";
 import { formatTime } from "../game/clock";
 import { getOutcomeTitle } from "../game/engine";
-import { getGrandmaHint, isLocationAvailable, visibleLocations } from "../game/rules";
+import { getGrandmaHint, isLocationAvailable } from "../game/rules";
 import { MockAdRewardProvider } from "../ports/AdRewardProvider";
 import type { AdRewardKind, GameCommand, GameState, Outcome } from "../types/game";
 
@@ -95,44 +96,56 @@ const Sheet = ({ title, eyebrow, onClose, children, className = "" }: SheetProps
 
 export const MapSheet = ({
   state,
-  dispatch,
   onClose,
 }: {
   state: GameState;
-  dispatch: (command: GameCommand) => void;
   onClose: () => void;
-}) => (
-  <Sheet title="村の地図" eyebrow={`${state.day}日目 ${formatTime(state.timeMinutes)}`} onClose={onClose}>
-    {state.timeMinutes >= 1080 && (
-      <div className="night-rule">18時以降は、おばあちゃんの家と裏庭だけ。</div>
-    )}
-    <div className="route-list">
-      {visibleLocations(state).map((location, index) => {
-        const access = isLocationAvailable(state, location.id);
-        const current = location.id === state.locationId;
-        return (
-          <div className="route-row" key={location.id}>
-            <span className="route-line" aria-hidden="true" />
-            <span className={`route-dot route-${index}`} aria-hidden="true" />
-            <button
-              disabled={!access.available || current}
-              onClick={() => {
-                dispatch({ type: "MOVE", locationId: location.id });
-                onClose();
-              }}
+}) => {
+  const discovered = new Set(state.field.discoveredFieldIds);
+  const visibleFields = fields.filter((field) => !field.secret || state.flags.secretRouteUnlocked);
+  return (
+    <Sheet title="村の地図" eyebrow={`${state.day}日目 ${formatTime(state.timeMinutes)}`} onClose={onClose}>
+      {state.timeMinutes >= 1080 && (
+        <div className="night-rule">18時以降は、おばあちゃんの家と裏庭だけ。</div>
+      )}
+      <div className="map-walk-note">地図は現在地の確認用です。道や出口まで歩いて移動しよう。</div>
+      <div className="field-map-grid" aria-label="村の場所と道">
+        {visibleFields.map((field) => {
+          const current = field.id === state.field.fieldId;
+          const known = discovered.has(field.id);
+          const access = field.locationId
+            ? isLocationAvailable(state, field.locationId)
+            : { available: state.timeMinutes < 1080, reason: "18時以降は通れません" };
+          return (
+            <div
+              className={`field-map-node ${current ? "is-current" : ""} ${known ? "is-known" : "is-unknown"}`}
+              key={field.id}
             >
+              <i aria-hidden="true" />
               <span>
-                <strong>{location.mapLabel}</strong>
-                <small>{current ? "いまここ" : access.available ? `${location.travelMinutes}分` : access.reason}</small>
+                <strong>{field.name}</strong>
+                <small>
+                  {current
+                    ? "いまここ"
+                    : !known
+                      ? "まだ歩いていません"
+                      : access.available
+                        ? "発見済み"
+                        : access.reason}
+                </small>
               </span>
-              <b>{current ? "現在地" : access.available ? "行く" : "—"}</b>
-            </button>
-          </div>
-        );
-      })}
-    </div>
-  </Sheet>
-);
+            </div>
+          );
+        })}
+      </div>
+      <div className="map-controls-help">
+        <strong>操作</strong>
+        <span>スマホ：左下スティック＋右下の行動ボタン</span>
+        <span>PC：矢印キー／WASD＋Enter</span>
+      </div>
+    </Sheet>
+  );
+};
 
 export const EncyclopediaSheet = ({ state, onClose }: { state: GameState; onClose: () => void }) => (
   <Sheet title="カブクワ図鑑" eyebrow={`${new Set(state.specimens.map((item) => item.insectId)).size} / ${insects.length}種`} onClose={onClose}>

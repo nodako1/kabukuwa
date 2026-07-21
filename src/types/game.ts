@@ -8,6 +8,14 @@ export type LocationId =
   | "school"
   | "secret-forest";
 
+export type FieldId =
+  | LocationId
+  | "paddy-road"
+  | "forest-road"
+  | "secret-path";
+
+export type FacingDirection = "up" | "down" | "left" | "right";
+
 export type TimePeriod = "morning" | "day" | "evening" | "night";
 export type GamePhase = "day" | "pickup" | "evening" | "day-ended";
 export type SpotKind = "tree" | "sap" | "banana-trap" | "light-trap";
@@ -97,6 +105,16 @@ export interface ExplorationState {
   searchedSpotIds: string[];
 }
 
+export interface PlayerFieldState {
+  fieldId: FieldId;
+  x: number;
+  y: number;
+  facing: FacingDirection;
+  lastSafeX: number;
+  lastSafeY: number;
+  discoveredFieldIds: FieldId[];
+}
+
 export type Outcome =
   | { type: "empty"; spotId: string; text: string }
   | { type: "caught"; specimen: Specimen; isPersonalBest: boolean }
@@ -107,6 +125,7 @@ export interface GameFlags {
   secretRouteUnlocked: boolean;
   pickupCompletedDay: number;
   extraHintDay: number;
+  fieldTutorialSeen: boolean;
 }
 
 export interface GameBuffs {
@@ -115,8 +134,8 @@ export interface GameBuffs {
 }
 
 export interface GameState {
-  schemaVersion: 1;
-  contentVersion: 1;
+  schemaVersion: 2;
+  contentVersion: 2;
   rngVersion: 1;
   worldSeed: string;
   revision: number;
@@ -124,6 +143,7 @@ export interface GameState {
   timeMinutes: number;
   phase: GamePhase;
   locationId: LocationId;
+  field: PlayerFieldState;
   visitCounters: Partial<Record<LocationId, number>>;
   exploration?: ExplorationState;
   specimens: Specimen[];
@@ -139,8 +159,17 @@ export type AdRewardKind = "appearance" | "duration" | "hint";
 export type GameCommand =
   | { type: "MOVE"; locationId: LocationId }
   | { type: "FOCUS_SPOT"; spotId: string }
-  | { type: "INSPECT_SPOT" }
+  | { type: "INSPECT_SPOT"; spotId?: string }
   | { type: "TALK"; npcId: NpcId }
+  | { type: "TRAVEL_EXIT"; exitId: string }
+  | {
+      type: "SYNC_PLAYER_POSITION";
+      x: number;
+      y: number;
+      facing: FacingDirection;
+    }
+  | { type: "RESET_PLAYER_POSITION" }
+  | { type: "DISMISS_FIELD_TUTORIAL" }
   | { type: "REST"; minutes: 30 | 60 }
   | { type: "APPLY_AD_REWARD"; reward: AdRewardKind }
   | { type: "ACKNOWLEDGE_OUTCOME" }
