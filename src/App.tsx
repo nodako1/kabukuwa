@@ -8,12 +8,15 @@ import {
   MorningBriefSheet,
   OutcomeSheet,
   PeopleSheet,
+  PlayerTrapActionSheet,
+  PlayerTrapTutorialSheet,
   PickupCutscene,
   RewardSheet,
 } from "./components/Sheets";
 import { StatusBar } from "./components/StatusBar";
 import { TitleScreen } from "./components/TitleScreen";
 import { TreeInspectionView } from "./components/TreeInspectionView";
+import { PlayerTrapInspectionView } from "./components/PlayerTrapInspectionView";
 import { useGame } from "./game/useGame";
 import { loadGame } from "./game/save";
 import "./styles.css";
@@ -26,6 +29,7 @@ const App = () => {
   const { state, dispatch } = useGame();
   const [started, setStarted] = useState(false);
   const [panel, setPanel] = useState<Panel>(null);
+  const [trapActionTreeId, setTrapActionTreeId] = useState<string | null>(null);
 
   if (!started) {
     return (
@@ -40,10 +44,15 @@ const App = () => {
     );
   }
 
-  const inspectionOpen = Boolean(state.activeInspectionSessionId);
+  const treeInspectionOpen = Boolean(state.activeInspectionSessionId);
+  const playerTrapInspectionOpen = Boolean(state.activePlayerTrapInspectionId);
+  const inspectionOpen = treeInspectionOpen || playerTrapInspectionOpen;
   const locked = state.phase === "pickup" || state.phase === "day-ended";
-  const morningBriefPending =
-    !state.morningBriefSeenDays.includes(state.day) &&
+  const dailyBriefPending = !state.morningBriefSeenDays.includes(state.day);
+  const playerTrapTutorialPending =
+    state.playerTrapKit.unlocked && !state.flags.playerTrapTutorialSeen;
+  const briefOrTutorialPending =
+    (dailyBriefPending || playerTrapTutorialPending) &&
     !inspectionOpen &&
     !state.pendingOutcome &&
     !locked;
@@ -51,7 +60,9 @@ const App = () => {
   return (
     <main className={`game-shell phase-${state.phase} ${inspectionOpen ? "inspection-open" : ""}`}>
       <StatusBar state={state} />
-      {inspectionOpen ? (
+      {playerTrapInspectionOpen ? (
+        <PlayerTrapInspectionView state={state} dispatch={dispatch} />
+      ) : treeInspectionOpen ? (
         <TreeInspectionView state={state} dispatch={dispatch} />
       ) : (
         <FieldViewport
@@ -59,8 +70,9 @@ const App = () => {
           state={state}
           dispatch={dispatch}
           onOpenRewards={() => setPanel("rewards")}
-          inputLocked={locked || panel !== null || Boolean(state.pendingOutcome) || morningBriefPending}
-          suppressTutorial={morningBriefPending}
+          onOpenTrapAction={setTrapActionTreeId}
+          inputLocked={locked || panel !== null || trapActionTreeId !== null || Boolean(state.pendingOutcome) || briefOrTutorialPending}
+          suppressTutorial={briefOrTutorialPending}
         />
       )}
       {!inspectionOpen && (
@@ -95,14 +107,25 @@ const App = () => {
       {panel === "rewards" && (
         <RewardSheet state={state} dispatch={dispatch} onClose={() => setPanel(null)} />
       )}
+      {trapActionTreeId && (
+        <PlayerTrapActionSheet
+          state={state}
+          treeId={trapActionTreeId}
+          dispatch={dispatch}
+          onClose={() => setTrapActionTreeId(null)}
+        />
+      )}
       {state.pendingOutcome && (
         <OutcomeSheet outcome={state.pendingOutcome} onClose={() => dispatch({ type: "ACKNOWLEDGE_OUTCOME" })} />
       )}
-      {morningBriefPending && panel === null && (
+      {briefOrTutorialPending && dailyBriefPending && panel === null && (
         <MorningBriefSheet
           state={state}
           onClose={() => dispatch({ type: "DISMISS_MORNING_BRIEF" })}
         />
+      )}
+      {briefOrTutorialPending && !dailyBriefPending && playerTrapTutorialPending && panel === null && (
+        <PlayerTrapTutorialSheet onClose={() => dispatch({ type: "DISMISS_MORNING_BRIEF" })} />
       )}
       {!state.pendingOutcome && !inspectionOpen && state.phase === "pickup" && (
         <PickupCutscene onComplete={() => dispatch({ type: "COMPLETE_PICKUP" })} />

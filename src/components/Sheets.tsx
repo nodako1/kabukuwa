@@ -17,6 +17,7 @@ import {
   getObservationProgressText,
 } from "../game/daily";
 import { getGrandmaHint, isLocationAvailable } from "../game/rules";
+import { playerTrapLocationId, treeIdFromPlayerTrapId } from "../game/playerTrap";
 import { MockAdRewardProvider } from "../ports/AdRewardProvider";
 import type { AdRewardKind, FieldId, GameCommand, GameState, Outcome } from "../types/game";
 
@@ -127,6 +128,91 @@ const Sheet = ({ title, eyebrow, onClose, children, className = "" }: SheetProps
   );
 };
 
+export const PlayerTrapActionSheet = ({
+  state,
+  treeId,
+  dispatch,
+  onClose,
+}: {
+  state: GameState;
+  treeId: string;
+  dispatch: (command: GameCommand) => void;
+  onClose: () => void;
+}) => {
+  const tree = treeById[treeId];
+  const activeTrap = state.playerTrapKit.activeTrap;
+  const isCurrentTree = activeTrap?.treeId === treeId;
+  const activeLocationId = activeTrap ? playerTrapLocationId(activeTrap) : undefined;
+  const [confirmRemoval, setConfirmRemoval] = useState(false);
+  useEffect(() => setConfirmRemoval(false), [treeId]);
+  if (!tree) return null;
+
+  if (activeTrap && !isCurrentTree) {
+    return (
+      <Sheet title="仕掛けはひとつだけ" eyebrow="バナナトラップ" onClose={onClose} className="player-trap-action-sheet">
+        <p className="trap-sheet-lead">
+          {activeLocationId
+            ? `${locationById[activeLocationId].name}に仕掛けてあります。`
+            : "別の木に仕掛けてあります。"}
+        </p>
+        <p>現地で仕掛けを回収すると、別の木へまた設置できます。</p>
+        <p>場所は下部メニューの「地図」から確認できます。</p>
+        <button className="primary-button" onClick={onClose}>わかった</button>
+      </Sheet>
+    );
+  }
+
+  if (activeTrap?.phase === "waiting") {
+    if (confirmRemoval) {
+      return (
+        <Sheet title="仕掛けを外しますか？" eyebrow={tree.label} onClose={() => setConfirmRemoval(false)} className="player-trap-action-sheet">
+          <p className="trap-sheet-lead">5分使って、トラップセットを手元へ戻します。</p>
+          <p>まだ中身は決まっていません。外しても虫の結果は表示されず、別の木へまた仕掛けられます。</p>
+          <button
+            className="primary-button"
+            onClick={() => {
+              onClose();
+              dispatch({ type: "REMOVE_WAITING_PLAYER_TRAP", trapId: activeTrap.id });
+            }}
+          >外して手元へ戻す · 5分</button>
+          <button className="text-button" onClick={() => setConfirmRemoval(false)}>そのまま待つ</button>
+        </Sheet>
+      );
+    }
+    return (
+      <Sheet title="仕掛け中" eyebrow={tree.label} onClose={onClose} className="player-trap-action-sheet">
+        <div className="trap-phase-card phase-waiting"><span aria-hidden="true">☾</span><strong>次の日の朝から確認できます</strong></div>
+        <dl className="trap-sheet-details">
+          <div><dt>設置した日</dt><dd>{activeTrap.installedDay}日目 {formatTime(activeTrap.installedAtMinutes)}</dd></div>
+          <div><dt>確認できる日</dt><dd>{activeTrap.readyDay}日目の朝から</dd></div>
+        </dl>
+        <p>このまま待つか、5分使って手元へ戻せます。外しても失敗にはなりません。</p>
+        <button
+          className="primary-button"
+          onClick={() => setConfirmRemoval(true)}
+        >仕掛けを外す · 5分</button>
+        <button className="text-button" onClick={onClose}>そのまま待つ</button>
+      </Sheet>
+    );
+  }
+
+  return (
+    <Sheet title="この木に仕掛けますか？" eyebrow={tree.label} onClose={onClose} className="player-trap-action-sheet">
+      <div className="trap-phase-card phase-available"><span aria-hidden="true">実</span><strong>くり返し使えるバナナトラップ</strong></div>
+      <p className="trap-sheet-lead">この木にバナナトラップを仕掛けます。</p>
+      <p>中を見られるのは、次の日の朝からです。虫がいるかどうかは、戻って覗くまで分かりません。</p>
+      <button
+        className="primary-button"
+        onClick={() => {
+          onClose();
+          dispatch({ type: "INSTALL_PLAYER_TRAP", treeId });
+        }}
+      >ここに仕掛ける · 10分</button>
+      <button className="text-button" onClick={onClose}>今はやめる</button>
+    </Sheet>
+  );
+};
+
 export const MapSheet = ({
   state,
   onClose,
@@ -148,6 +234,9 @@ export const MapSheet = ({
   const branchIds: FieldId[] = state.flags.secretRouteUnlocked
     ? ["backyard", "secret-path", "secret-forest"]
     : ["backyard"];
+  const activePlayerTrapTree = state.playerTrapKit.activeTrap
+    ? treeById[state.playerTrapKit.activeTrap.treeId]
+    : undefined;
   const renderNode = (fieldId: FieldId, branch = false) => {
     const field = fieldById[fieldId];
     const current = field.id === state.field.fieldId;
@@ -173,6 +262,11 @@ export const MapSheet = ({
                   : access.reason}
           </small>
         </span>
+        {activePlayerTrapTree?.fieldId === field.id && (
+          <em className={`map-player-trap-badge phase-${state.playerTrapKit.activeTrap?.phase}`}>
+            {state.playerTrapKit.activeTrap?.phase === "waiting" ? "☾ 仕掛け中" : state.playerTrapKit.activeTrap?.phase === "ready" ? "◉ 見に行ける" : "▣ 確認途中"}
+          </em>
+        )}
       </div>
     );
   };
@@ -210,6 +304,9 @@ export const MorningBriefSheet = ({
   if (!plan) return null;
   const nature = dailyNatureById[plan.natureId];
   const theme = observationThemeById[plan.themeId];
+  const activeTrap = state.playerTrapKit.activeTrap;
+  const trapLocationId = activeTrap ? playerTrapLocationId(activeTrap) : undefined;
+  const showTrapTutorial = state.playerTrapKit.unlocked && !state.flags.playerTrapTutorialSeen;
   return (
     <Sheet
       title="今日の自然のようす"
@@ -231,10 +328,50 @@ export const MorningBriefSheet = ({
         <p>できなくても大丈夫。今日は自由に虫取りを楽しもう。</p>
       </div>
       <div className="morning-rumor-note">村の誰かが、今日の噂を知っているかもしれない。</div>
+      {showTrapTutorial && (
+        <div className="morning-player-trap tutorial">
+          <span aria-hidden="true">実</span>
+          <div>
+            <small>おばあちゃんからの仕掛け</small>
+            <strong>気になる木に、ひとつだけ仕掛けられるようになった</strong>
+            <p>対応する木へ近づき、「トラップを仕掛ける」を選ぼう。中を見られるのは次の日の朝からです。</p>
+          </div>
+        </div>
+      )}
+      {activeTrap && trapLocationId && (activeTrap.phase === "ready" || activeTrap.phase === "opened") && (
+        <div className={`morning-player-trap phase-${activeTrap.phase}`}>
+          <span aria-hidden="true">◉</span>
+          <div>
+            <small>昨日の仕掛け</small>
+            <strong>{locationById[trapLocationId].name}で見に行けます</strong>
+            <p>どの虫がいるかは、同じ木まで歩いて覗くまで分かりません。</p>
+          </div>
+        </div>
+      )}
       <button className="primary-button" onClick={onClose}>虫取りへ出かける</button>
     </Sheet>
   );
 };
+
+export const PlayerTrapTutorialSheet = ({ onClose }: { onClose: () => void }) => (
+  <Sheet
+    title="自分で仕掛けるバナナトラップ"
+    eyebrow="新しい虫取り道具"
+    onClose={onClose}
+    className="morning-brief-sheet player-trap-tutorial-sheet"
+  >
+    <div className="morning-player-trap tutorial">
+      <span aria-hidden="true">実</span>
+      <div>
+        <small>おばあちゃんからの仕掛け</small>
+        <strong>気になる木に、ひとつだけ仕掛けられるようになった</strong>
+        <p>対応する木へ近づき、「トラップを仕掛ける」を選ぼう。中を見られるのは次の日の朝からです。</p>
+      </div>
+    </div>
+    <p>仕掛けた場所は地図で確認できます。結果は、同じ木まで歩いて戻ってから覗いてみよう。</p>
+    <button className="primary-button" onClick={onClose}>わかった</button>
+  </Sheet>
+);
 
 const InsectCollection = ({ state }: { state: GameState }) => (
   <div className="card-list">
@@ -284,6 +421,16 @@ const ObservationNotebook = ({ state }: { state: GameState }) => {
             <span>{getObservationProgressText(state)}</span>
           </div>
           <small>噂：{state.heardRumorDays.includes(state.day) ? "今日の噂を聞いた" : "まだ聞いていない"}</small>
+          {state.playerTrapKit.activeTrap && (() => {
+            const trap = state.playerTrapKit.activeTrap;
+            const locationId = playerTrapLocationId(trap);
+            return locationId ? (
+              <div className={`journal-trap-status phase-${trap.phase}`}>
+                <strong>{trap.phase === "waiting" ? "仕掛け中" : trap.phase === "ready" ? "見に行ける" : "確認途中"}</strong>
+                <span>{locationById[locationId].name}</span>
+              </div>
+            ) : null;
+          })()}
         </article>
       )}
       {entries.length === 0 && currentFinalized === false && (
@@ -317,6 +464,20 @@ const ObservationNotebook = ({ state }: { state: GameState }) => {
           const visitedFieldNames = entry.visitedFieldIds
             .map((fieldId) => fieldById[fieldId].name)
             .join(" → ");
+          const placedTrapPlaces = entry.placedPlayerTrapIds
+            .map((id) => treeIdFromPlayerTrapId(id))
+            .map((treeId) => treeId ? treeById[treeId] : undefined)
+            .map((tree) => tree ? fieldById[tree.fieldId].locationId : undefined)
+            .filter((locationId): locationId is NonNullable<typeof locationId> => Boolean(locationId))
+            .map((locationId) => locationById[locationId].name)
+            .join("・");
+          const checkedTrapPlaces = entry.checkedPlayerTrapIds
+            .map((id) => treeIdFromPlayerTrapId(id))
+            .map((treeId) => treeId ? treeById[treeId] : undefined)
+            .map((tree) => tree ? fieldById[tree.fieldId].locationId : undefined)
+            .filter((locationId): locationId is NonNullable<typeof locationId> => Boolean(locationId))
+            .map((locationId) => locationById[locationId].name)
+            .join("・");
           return (
             <details className="journal-entry" key={entry.day} open={entry.day === state.day}>
               <summary>
@@ -335,6 +496,9 @@ const ObservationNotebook = ({ state }: { state: GameState }) => {
                   <span>木 {entry.inspectedTreeIds.length}本</span>
                   <span>捕獲 {entry.capturedSpecimenIds.length}匹</span>
                   <span>歩いた場所 {entry.visitedFieldIds.length}か所</span>
+                  {(entry.placedPlayerTrapIds.length > 0 || entry.checkedPlayerTrapIds.length > 0) && (
+                    <span>自分の仕掛け {entry.checkedPlayerTrapIds.length > 0 ? "確認" : "設置"}</span>
+                  )}
                 </div>
                 <dl className="journal-detail-list">
                   <div>
@@ -347,6 +511,8 @@ const ObservationNotebook = ({ state }: { state: GameState }) => {
                   <div><dt>見たところ</dt><dd>{pointKindNames || "まだ見ていない"}</dd></div>
                   <div><dt>話した人</dt><dd>{talkedNpcNames || "なし"}</dd></div>
                   <div><dt>歩いた場所</dt><dd>{visitedFieldNames || "なし"}</dd></div>
+                  <div><dt>仕掛けた場所</dt><dd>{placedTrapPlaces || "なし"}</dd></div>
+                  <div><dt>確認した仕掛け</dt><dd>{checkedTrapPlaces || "なし"}</dd></div>
                 </dl>
                 {entry.rumorId && entry.rumorNpcId && (
                   <blockquote>
@@ -579,7 +745,9 @@ export const OutcomeSheet = ({ outcome, onClose }: { outcome: Outcome; onClose: 
               <dt>見つけた所</dt>
               <dd>
                 {outcome.specimen.treeId && treeById[outcome.specimen.treeId]
-                  ? `${treeById[outcome.specimen.treeId].label}・${treeById[outcome.specimen.treeId].inspectionPoints.find((point) => point.id === outcome.specimen.inspectionPointId)?.label ?? "木のそば"}`
+                  ? outcome.specimen.captureSource === "player-banana"
+                    ? `${treeById[outcome.specimen.treeId].label}・自分で仕掛けたバナナトラップ`
+                    : `${treeById[outcome.specimen.treeId].label}・${treeById[outcome.specimen.treeId].inspectionPoints.find((point) => point.id === outcome.specimen.inspectionPointId)?.label ?? "木のそば"}`
                   : "木のそば"}
               </dd>
             </div>
@@ -588,7 +756,9 @@ export const OutcomeSheet = ({ outcome, onClose }: { outcome: Outcome; onClose: 
           <p>大きさは広告効果に左右されません。</p>
           <div className={`ranking-note ${outcome.specimen.rankingEligible ? "is-eligible" : "is-assisted"}`}>
             {outcome.specimen.rankingEligible
-              ? "自然出現：将来のランキング対象"
+              ? outcome.specimen.captureSource === "player-banana"
+                ? "自分で仕掛けた通常トラップ：将来のランキング対象"
+                : "自然出現：将来のランキング対象"
               : "出現率アップで追加出現：図鑑・採集記録のみ"}
           </div>
         </div>
@@ -694,6 +864,8 @@ export const DaySummarySheet = ({
             <dl>
               <div><dt>調べた木</dt><dd>{journal.inspectedTreeIds.length}本</dd></div>
               <div><dt>見たところ</dt><dd>{pointKindLabel}</dd></div>
+              <div><dt>仕掛けた</dt><dd>{journal.placedPlayerTrapIds.length > 0 ? "1か所" : "なし"}</dd></div>
+              <div><dt>仕掛け確認</dt><dd>{journal.checkedPlayerTrapIds.length > 0 ? "できた" : "なし"}</dd></div>
             </dl>
             <div className={`summary-theme-result ${journal.themeCompleted ? "is-complete" : ""}`}>
               <span aria-hidden="true">{journal.themeCompleted ? theme.stamp : "葉"}</span>

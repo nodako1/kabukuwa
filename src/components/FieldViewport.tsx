@@ -89,6 +89,7 @@ interface FieldViewportProps {
   state: GameState;
   dispatch: (command: GameCommand) => void;
   onOpenRewards: () => void;
+  onOpenTrapAction: (treeId: string) => void;
   inputLocked: boolean;
   suppressTutorial?: boolean;
 }
@@ -108,6 +109,7 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
   state,
   dispatch,
   onOpenRewards,
+  onOpenTrapAction,
   inputLocked,
   suppressTutorial = false,
 }, ref) {
@@ -147,6 +149,9 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
       clueDiscovered: Boolean(sessionId && state.discoveredClueSessionIds.includes(sessionId)),
       searched: Boolean(stored?.committed && isInspectionComplete(stored, tree)),
       active: Boolean(preview),
+      playerTrapPhase: state.playerTrapKit.activeTrap?.treeId === tree.id
+        ? state.playerTrapKit.activeTrap.phase
+        : undefined,
     };
   }), [field.id, state]);
 
@@ -200,6 +205,9 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
   }, [field.npcPositions, field.rewardPoint, presentNpcIds, treeStates]);
 
   const nearbyTarget = targets.find((target) => target.key === nearbyKey) ?? null;
+  const nearbyTreeState = nearbyTarget?.kind === "tree"
+    ? treeStates.find((item) => item.tree.id === nearbyTarget.treeId)
+    : undefined;
 
   const updateNearbyTarget = useCallback((position: { x: number; y: number }) => {
     const candidate = findNearestInteractionTarget(position, targets, INTERACTION_RADIUS);
@@ -431,10 +439,30 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
     if (!target || inputLocked || transitioning || !state.flags.fieldTutorialSeen) return;
     clearInput();
     commitPosition();
-    if (target.kind === "tree") dispatch({ type: "OPEN_TREE_INSPECTION", treeId: target.treeId });
+    if (target.kind === "tree") {
+      const trap = state.playerTrapKit.activeTrap;
+      if (
+        trap?.treeId === target.treeId &&
+        (trap.phase === "ready" || trap.phase === "opened")
+      ) dispatch({ type: "OPEN_PLAYER_TRAP_INSPECTION", trapId: trap.id });
+      else dispatch({ type: "OPEN_TREE_INSPECTION", treeId: target.treeId });
+    }
     else if (target.kind === "npc") dispatch({ type: "TALK", npcId: target.npcId });
     else onOpenRewards();
-  }, [clearInput, commitPosition, dispatch, inputLocked, onOpenRewards, state.flags.fieldTutorialSeen, targets, transitioning]);
+  }, [clearInput, commitPosition, dispatch, inputLocked, onOpenRewards, state.flags.fieldTutorialSeen, state.playerTrapKit.activeTrap, targets, transitioning]);
+
+  const runSecondaryAction = useCallback(() => {
+    const target = targets.find((candidate) => candidate.key === nearbyKeyRef.current);
+    if (target?.kind !== "tree" || inputLocked || transitioning || !state.flags.fieldTutorialSeen) return;
+    clearInput();
+    commitPosition();
+    const trap = state.playerTrapKit.activeTrap;
+    if (trap?.treeId === target.treeId && (trap.phase === "ready" || trap.phase === "opened")) {
+      dispatch({ type: "OPEN_TREE_INSPECTION", treeId: target.treeId });
+    } else {
+      onOpenTrapAction(target.treeId);
+    }
+  }, [clearInput, commitPosition, dispatch, inputLocked, onOpenTrapAction, state.flags.fieldTutorialSeen, state.playerTrapKit.activeTrap, targets, transitioning]);
 
   useEffect(() => {
     const keyDown = (event: KeyboardEvent) => {
@@ -447,6 +475,9 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
       } else if ((key === "Enter" || key === " ") && !event.repeat) {
         event.preventDefault();
         runAction();
+      } else if (key === "e" && !event.repeat) {
+        event.preventDefault();
+        runSecondaryAction();
       }
     };
     const keyUp = (event: KeyboardEvent) => {
@@ -468,7 +499,7 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
       window.removeEventListener("blur", stop);
       document.removeEventListener("visibilitychange", visibility);
     };
-  }, [clearInput, commitPosition, runAction]);
+  }, [clearInput, commitPosition, runAction, runSecondaryAction]);
 
   const updateJoystick = (event: ReactPointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -531,7 +562,11 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
   const actionLabel = !nearbyTarget
     ? "近づくと行動できます"
     : nearbyTarget.kind === "tree"
-      ? !nearbyTarget.active
+      ? nearbyTreeState?.playerTrapPhase === "ready"
+        ? `${nearbyTarget.label}のトラップを見る · 15分`
+        : nearbyTreeState?.playerTrapPhase === "opened"
+          ? `${nearbyTarget.label}のトラップをもう一度見る`
+          : !nearbyTarget.active
         ? `${nearbyTarget.label}は今は静かです`
         : nearbyTarget.searched
           ? `${nearbyTarget.label}をもう一度覗く`
@@ -539,6 +574,16 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
       : nearbyTarget.kind === "npc"
         ? `${nearbyTarget.label}と話す · 15分`
         : nearbyTarget.label;
+
+  const secondaryActionLabel = nearbyTarget?.kind === "tree" && nearbyTreeState?.tree.playerTrapSlot && state.playerTrapKit.unlocked
+    ? nearbyTreeState.playerTrapPhase === "waiting"
+      ? "仕掛けを確認する"
+      : nearbyTreeState.playerTrapPhase === "ready" || nearbyTreeState.playerTrapPhase === "opened"
+        ? "この木を普通に調べる"
+        : state.playerTrapKit.activeTrap
+          ? "別の場所に仕掛け中"
+          : "トラップを仕掛ける · 10分"
+    : null;
 
   return (
     <section
@@ -578,7 +623,7 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
             </div>
           );
         })}
-        {treeStates.map(({ tree, trapState, clueDiscovered, searched, active }) => (
+        {treeStates.map(({ tree, trapState, clueDiscovered, searched, active, playerTrapPhase }) => (
           <div
             className={`field-hotspot ${searched ? "is-searched" : ""}`}
             key={tree.id}
@@ -589,6 +634,12 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
             <div className="tree-marker-stack">
               {clueDiscovered && <b className="tree-clue-marker" title="何かの気配">！</b>}
               {trapState && <b className={`tree-trap-marker trap-${trapState.kind} ${active ? "is-active" : ""}`} title={active ? "利用できる仕掛け" : "今は利用できない仕掛け"}>♢</b>}
+              {playerTrapPhase && (
+                <b className={`player-trap-marker phase-${playerTrapPhase}`} title={playerTrapPhase === "waiting" ? "仕掛け中" : playerTrapPhase === "ready" ? "見に行ける" : "確認途中"}>
+                  {playerTrapPhase === "waiting" ? "☾" : playerTrapPhase === "ready" ? "◉" : "▣"}
+                  <span>{playerTrapPhase === "waiting" ? "仕掛け中" : playerTrapPhase === "ready" ? "見に行ける" : "確認途中"}</span>
+                </b>
+              )}
               {searched && <b className="tree-checked-marker" title="今回の調査済み">✓</b>}
             </div>
           </div>
@@ -642,16 +693,28 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
       >
         <span ref={joystickKnobRef} />
       </div>
-      <button
-        className={`context-action-button ${nearbyTarget ? "is-ready" : ""}`}
-        onClick={runAction}
-        disabled={!nearbyTarget || inputLocked || transitioning || !state.flags.fieldTutorialSeen}
-        aria-keyshortcuts="Enter Space"
-        aria-live="polite"
-      >
-        <small>{nearbyTarget?.kind === "npc" ? "会話" : "行動"}</small>
-        <strong>{actionLabel}</strong>
-      </button>
+      <div className="context-action-stack">
+        {secondaryActionLabel && (
+          <button
+            className="context-secondary-button"
+            onClick={runSecondaryAction}
+            disabled={inputLocked || transitioning || !state.flags.fieldTutorialSeen}
+            aria-keyshortcuts="E"
+          >
+            {secondaryActionLabel}
+          </button>
+        )}
+        <button
+          className={`context-action-button ${nearbyTarget ? "is-ready" : ""}`}
+          onClick={runAction}
+          disabled={!nearbyTarget || inputLocked || transitioning || !state.flags.fieldTutorialSeen}
+          aria-keyshortcuts="Enter Space"
+          aria-live="polite"
+        >
+          <small>{nearbyTarget?.kind === "npc" ? "会話" : "行動"}</small>
+          <strong>{actionLabel}</strong>
+        </button>
+      </div>
 
       <div className="accessible-dpad" role="group" aria-label="移動ボタン">
         <button disabled={inputLocked || transitioning || !state.flags.fieldTutorialSeen} onClick={() => nudge(0, -36, "up")} aria-label="上へ歩く">上</button>

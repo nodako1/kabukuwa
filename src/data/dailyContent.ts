@@ -77,6 +77,8 @@ export const observationThemes: ObservationThemeDefinition[] = [
   { id: "check-a-trap", label: "夜の仕掛けを確認してみよう", shortLabel: "夜の仕掛けを見る", stamp: "灯" },
   { id: "complete-one-tree", label: "1本の木をすみずみまで見よう", shortLabel: "1本を見尽くす", stamp: "完" },
   { id: "walk-the-loop", label: "寄り道しながら一周してみよう", shortLabel: "村を一周する", stamp: "巡" },
+  { id: "set-player-trap", label: "気になる木に仕掛けてみよう", shortLabel: "仕掛けを置く", stamp: "実" },
+  { id: "check-player-trap", label: "昨日の仕掛けを見に行こう", shortLabel: "仕掛けを見に行く", stamp: "待" },
 ];
 
 export const observationThemeById = Object.fromEntries(

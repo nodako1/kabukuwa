@@ -48,9 +48,16 @@ import {
   recordInspectionPoint,
   recordInspectionStarted,
   recordNpcTalk,
+  recordPlayerTrapChecked,
+  recordPlayerTrapInstalled,
   recordSpecimenCapture,
   startDailyObservation,
 } from "./daily";
+import {
+  playerTrapId,
+  playerTrapLocationId,
+  resolvePlayerTrapForDay,
+} from "./playerTrap";
 
 const withRevision = (state: GameState): GameState => ({
   ...state,
@@ -79,8 +86,8 @@ const fieldStateAt = (
 };
 
 export const createInitialGame = (seed = `summer-${Date.now().toString(36)}`): GameState => ({
-  schemaVersion: 4,
-  contentVersion: 4,
+  schemaVersion: 5,
+  contentVersion: 5,
   rngVersion: 1,
   worldSeed: seed,
   revision: 0,
@@ -98,6 +105,7 @@ export const createInitialGame = (seed = `summer-${Date.now().toString(36)}`): G
     pickupCompletedDay: 0,
     extraHintDay: 0,
     fieldTutorialSeen: false,
+    playerTrapTutorialSeen: false,
   },
   buffs: {
     appearanceBoostUntil: 0,
@@ -107,8 +115,43 @@ export const createInitialGame = (seed = `summer-${Date.now().toString(36)}`): G
   discoveredClueSessionIds: [],
   caughtEncounterIds: [],
   trapStates: initialTrapStates(),
+  playerTrapKit: { unlocked: false, nextSequence: 1 },
   ...createInitialDailyRecords(1, seed),
 });
+
+const hasActiveInspection = (state: GameState): boolean =>
+  Boolean(state.activeInspectionSessionId || state.activePlayerTrapInspectionId);
+
+const syncExplorationPeriod = (state: GameState): GameState => {
+  if (!state.exploration || state.exploration.locationId !== state.locationId) return state;
+  const currentPeriod = getTimePeriod(state.timeMinutes);
+  if (state.exploration.period === currentPeriod) return state;
+  return {
+    ...state,
+    exploration: {
+      ...state.exploration,
+      period: currentPeriod,
+      focusedSpotId: undefined,
+      searchedSpotIds: [],
+    },
+  };
+};
+
+const resolvedActionMinutes = (
+  state: GameState,
+  minutes: number,
+  actionOriginState = state,
+): number => {
+  const destinationMinutes = state.timeMinutes + minutes;
+  if (destinationMinutes >= DAY_END) return DAY_END;
+  const crossesPickup =
+    state.timeMinutes < EVENING_START &&
+    destinationMinutes >= EVENING_START &&
+    (!HOME_FIELD_IDS.includes(actionOriginState.field.fieldId) ||
+      !HOME_FIELD_IDS.includes(state.field.fieldId)) &&
+    state.flags.pickupCompletedDay !== state.day;
+  return crossesPickup ? EVENING_START : destinationMinutes;
+};
 
 const advanceAfterAction = (
   state: GameState,
@@ -121,25 +164,8 @@ const advanceAfterAction = (
 
   if (outcome) next.pendingOutcome = outcome;
 
-  const syncExplorationPeriod = (candidate: GameState): GameState => {
-    if (!candidate.exploration || candidate.exploration.locationId !== candidate.locationId) {
-      return candidate;
-    }
-    const currentPeriod = getTimePeriod(candidate.timeMinutes);
-    if (candidate.exploration.period === currentPeriod) return candidate;
-    return {
-      ...candidate,
-      exploration: {
-        ...candidate.exploration,
-        period: currentPeriod,
-        focusedSpotId: undefined,
-        searchedSpotIds: [],
-      },
-    };
-  };
-
   if (destinationMinutes >= DAY_END) {
-    if (state.activeInspectionSessionId) {
+    if (hasActiveInspection(state)) {
       return {
         ...next,
         timeMinutes: DAY_END,
@@ -160,7 +186,7 @@ const advanceAfterAction = (
     (actionStartedAwayFromHome || actionEndsAwayFromHome) &&
     state.flags.pickupCompletedDay !== state.day
   ) {
-    if (state.activeInspectionSessionId) {
+    if (hasActiveInspection(state)) {
       return {
         ...next,
         timeMinutes: EVENING_START,
@@ -192,6 +218,26 @@ const notice = (state: GameState, title: string, text: string): GameState =>
 
 const isPlayerNear = (state: GameState, point: { x: number; y: number }): boolean =>
   distanceBetween(state.field, point) < INTERACTION_RADIUS;
+
+const applyDeferredBoundary = (state: GameState): GameState => {
+  if (state.pendingBoundaryEvent === "pickup") {
+    return syncExplorationPeriod({
+      ...state,
+      phase: "pickup",
+      timeMinutes: EVENING_START,
+      pendingBoundaryEvent: undefined,
+    });
+  }
+  if (state.pendingBoundaryEvent === "day-ended") {
+    return finalizeObservationJournal(syncExplorationPeriod({
+      ...state,
+      phase: "day-ended",
+      timeMinutes: DAY_END,
+      pendingBoundaryEvent: undefined,
+    }));
+  }
+  return state;
+};
 
 const currentFieldCollisionRects = (state: GameState) => {
   const field = fieldById[state.field.fieldId];
@@ -263,7 +309,7 @@ const travelEdge = (
   const progressed = recordFieldVisit(
     arrived,
     exit.toFieldId,
-    Math.min(DAY_END, state.timeMinutes + exit.travelMinutes),
+    resolvedActionMinutes(arrived, exit.travelMinutes, actionOriginState),
   );
   return withRevision(advanceAfterAction(progressed, exit.travelMinutes, undefined, actionOriginState));
 };
@@ -385,6 +431,11 @@ const catchInspectionEncounter = (state: GameState, encounterId: string): GameSt
     treeId: session.treeId,
     inspectionPointId: encounter.pointId,
     rankingEligible: encounter.rankingEligible,
+    captureSource: treeById[session.treeId]?.trapKind === "banana"
+      ? "fixed-banana"
+      : treeById[session.treeId]?.trapKind === "light"
+        ? "fixed-light"
+        : "tree",
   };
   const nextSession = {
     ...session,
@@ -421,13 +472,217 @@ const closeTreeInspection = (state: GameState): GameState => {
         }
       : state.field,
   };
-  if (state.pendingBoundaryEvent === "pickup") {
-    next = { ...next, phase: "pickup", timeMinutes: EVENING_START, pendingBoundaryEvent: undefined };
-  } else if (state.pendingBoundaryEvent === "day-ended") {
-    next = { ...next, phase: "day-ended", timeMinutes: DAY_END, pendingBoundaryEvent: undefined };
-    next = finalizeObservationJournal(next);
+  return withRevision(applyDeferredBoundary(next));
+};
+
+const installPlayerTrap = (state: GameState, treeId: string): GameState => {
+  const tree = treeById[treeId];
+  if (
+    state.phase !== "day" ||
+    state.timeMinutes >= EVENING_START ||
+    !tree ||
+    tree.playerTrapSlot !== "banana" ||
+    tree.fieldId !== state.field.fieldId ||
+    !state.exploration ||
+    !isPlayerNear(state, { x: tree.x, y: tree.y + 30 })
+  ) return state;
+  if (!state.playerTrapKit.unlocked) {
+    return notice(state, "まだ仕掛けを持っていません", "2日目の朝に、おばあちゃんが用意してくれます。");
   }
-  return withRevision(next);
+  const existing = state.playerTrapKit.activeTrap;
+  if (existing) {
+    const locationId = playerTrapLocationId(existing);
+    return notice(
+      state,
+      "仕掛けはひとつだけ",
+      locationId
+        ? `${locationById[locationId].name}に仕掛けてあります。現地で回収してから使おう。`
+        : "別の木に仕掛けてあります。現地で回収してから使おう。",
+    );
+  }
+  const sequence = state.playerTrapKit.nextSequence;
+  const id = playerTrapId(sequence, tree.id, state.day);
+  const installed = {
+    ...state,
+    playerTrapKit: {
+      ...state.playerTrapKit,
+      nextSequence: sequence + 1,
+      activeTrap: {
+        id,
+        kind: "banana" as const,
+        sequence,
+        treeId: tree.id,
+        installedDay: state.day,
+        installedAtMinutes: state.timeMinutes,
+        readyDay: state.day + 1,
+        phase: "waiting" as const,
+      },
+    },
+  };
+  const progressed = recordPlayerTrapInstalled(installed, id, resolvedActionMinutes(state, 10));
+  return withRevision(advanceAfterAction(
+    progressed,
+    10,
+    { type: "notice", title: "仕掛けを置いた", text: "中を見られるのは、次の日の朝からです。" },
+    state,
+  ));
+};
+
+const removeWaitingPlayerTrap = (state: GameState, trapId: string): GameState => {
+  const trap = state.playerTrapKit.activeTrap;
+  const tree = trap ? treeById[trap.treeId] : undefined;
+  if (
+    state.phase !== "day" ||
+    state.timeMinutes >= EVENING_START ||
+    !trap ||
+    trap.id !== trapId ||
+    trap.phase !== "waiting" ||
+    !tree ||
+    tree.fieldId !== state.field.fieldId ||
+    !isPlayerNear(state, { x: tree.x, y: tree.y + 30 })
+  ) return state;
+  const removed = {
+    ...state,
+    playerTrapKit: { ...state.playerTrapKit, activeTrap: undefined },
+  };
+  return withRevision(advanceAfterAction(
+    removed,
+    5,
+    { type: "notice", title: "仕掛けを外した", text: "トラップセットを手元へ戻しました。" },
+    state,
+  ));
+};
+
+const openPlayerTrapInspection = (state: GameState, trapId: string): GameState => {
+  const trap = state.playerTrapKit.activeTrap;
+  const tree = trap ? treeById[trap.treeId] : undefined;
+  if (
+    state.phase === "pickup" ||
+    state.phase === "day-ended" ||
+    !trap ||
+    trap.id !== trapId ||
+    (trap.phase !== "ready" && trap.phase !== "opened") ||
+    !trap.outcomePlan ||
+    !tree ||
+    tree.fieldId !== state.field.fieldId ||
+    !isPlayerNear(state, { x: tree.x, y: tree.y + 30 })
+  ) return state;
+
+  if (trap.phase === "opened") {
+    const reopened = {
+      ...state,
+      activePlayerTrapInspectionId: trap.id,
+    };
+    const progressed = recordPlayerTrapChecked(
+      reopened,
+      trap.id,
+      trap.outcomePlan.ambientPlacements.map((placement) => placement.insectId),
+      state.timeMinutes,
+    );
+    return withRevision(progressed);
+  }
+
+  const openedTrap = {
+    ...trap,
+    phase: "opened" as const,
+    openedAtMinutes: state.timeMinutes,
+  };
+  const opened = {
+    ...state,
+    activePlayerTrapInspectionId: trap.id,
+    playerTrapKit: { ...state.playerTrapKit, activeTrap: openedTrap },
+  };
+  const progressed = recordPlayerTrapChecked(
+    opened,
+    trap.id,
+    trap.outcomePlan.ambientPlacements.map((placement) => placement.insectId),
+    resolvedActionMinutes(state, 15),
+  );
+  return withRevision(advanceAfterAction(progressed, 15, undefined, state));
+};
+
+const catchPlayerTrapEncounter = (
+  state: GameState,
+  trapId: string,
+  encounterId: string,
+): GameState => {
+  const trap = state.playerTrapKit.activeTrap;
+  const outcomePlan = trap?.outcomePlan;
+  const encounter = outcomePlan?.encounter;
+  const tree = trap ? treeById[trap.treeId] : undefined;
+  const locationId = trap ? playerTrapLocationId(trap) : undefined;
+  if (
+    !trap ||
+    state.activePlayerTrapInspectionId !== trapId ||
+    trap.id !== trapId ||
+    trap.phase !== "opened" ||
+    !outcomePlan ||
+    !encounter ||
+    encounter.id !== encounterId ||
+    encounter.caught ||
+    state.specimens.some((specimen) => specimen.id === encounterId) ||
+    !tree ||
+    !locationId
+  ) return state;
+
+  const previousBest = state.specimens
+    .filter((specimen) => specimen.insectId === encounter.insectId)
+    .reduce((best, specimen) => Math.max(best, specimen.sizeMm), 0);
+  const specimen: Specimen = {
+    id: encounter.id,
+    insectId: encounter.insectId,
+    sizeMm: encounter.sizeMm,
+    day: state.day,
+    caughtAtMinutes: state.timeMinutes,
+    locationId,
+    spotId: trap.id,
+    treeId: tree.id,
+    inspectionPointId: `${tree.id}:player-banana-trap`,
+    rankingEligible: true,
+    captureSource: "player-banana",
+  };
+  const nextTrap = {
+    ...trap,
+    outcomePlan: {
+      ...outcomePlan,
+      encounter: { ...encounter, caught: true },
+    },
+  };
+  const caught: GameState = {
+    ...state,
+    specimens: [...state.specimens, specimen],
+    playerTrapKit: { ...state.playerTrapKit, activeTrap: nextTrap },
+    pendingOutcome: {
+      type: "caught" as const,
+      specimen,
+      isPersonalBest: specimen.sizeMm > previousBest,
+      isFirstCatch: previousBest === 0,
+    },
+  };
+  return withRevision(recordSpecimenCapture(caught, specimen.id));
+};
+
+const closePlayerTrapInspection = (state: GameState, trapId: string): GameState => {
+  if (state.activePlayerTrapInspectionId !== trapId || state.playerTrapKit.activeTrap?.id !== trapId) {
+    return state;
+  }
+  return withRevision(applyDeferredBoundary({ ...state, activePlayerTrapInspectionId: undefined }));
+};
+
+const recoverPlayerTrap = (state: GameState, trapId: string): GameState => {
+  if (state.activePlayerTrapInspectionId !== trapId || state.playerTrapKit.activeTrap?.id !== trapId) {
+    return state;
+  }
+  return withRevision(applyDeferredBoundary({
+    ...state,
+    activePlayerTrapInspectionId: undefined,
+    playerTrapKit: { ...state.playerTrapKit, activeTrap: undefined },
+    pendingOutcome: {
+      type: "notice",
+      title: "仕掛けを回収した",
+      text: "トラップセットを手元へ戻しました。今日また別の木へ仕掛けられます。",
+    },
+  }));
 };
 
 const discoverTreeClue = (
@@ -500,7 +755,7 @@ const talk = (state: GameState, npcId: Parameters<typeof isNpcPresent>[1]): Game
         },
     },
     npcId,
-    Math.min(DAY_END, state.timeMinutes + 15),
+    resolvedActionMinutes(state, 15),
   );
   return withRevision(advanceAfterAction(
     talked,
@@ -608,6 +863,16 @@ export const gameReducer = (state: GameState, command: GameCommand): GameState =
       "RESET_GAME",
     ].includes(command.type)
   ) return state;
+  if (
+    state.activePlayerTrapInspectionId &&
+    ![
+      "CATCH_PLAYER_TRAP_ENCOUNTER",
+      "CLOSE_PLAYER_TRAP_INSPECTION",
+      "RECOVER_PLAYER_TRAP",
+      "ACKNOWLEDGE_OUTCOME",
+      "RESET_GAME",
+    ].includes(command.type)
+  ) return state;
   switch (command.type) {
     case "OPEN_TREE_INSPECTION":
       if (state.phase === "pickup" || state.phase === "day-ended") return state;
@@ -618,6 +883,18 @@ export const gameReducer = (state: GameState, command: GameCommand): GameState =
       return catchInspectionEncounter(state, command.encounterId);
     case "CLOSE_TREE_INSPECTION":
       return closeTreeInspection(state);
+    case "INSTALL_PLAYER_TRAP":
+      return installPlayerTrap(state, command.treeId);
+    case "REMOVE_WAITING_PLAYER_TRAP":
+      return removeWaitingPlayerTrap(state, command.trapId);
+    case "OPEN_PLAYER_TRAP_INSPECTION":
+      return openPlayerTrapInspection(state, command.trapId);
+    case "CATCH_PLAYER_TRAP_ENCOUNTER":
+      return catchPlayerTrapEncounter(state, command.trapId, command.encounterId);
+    case "CLOSE_PLAYER_TRAP_INSPECTION":
+      return closePlayerTrapInspection(state, command.trapId);
+    case "RECOVER_PLAYER_TRAP":
+      return recoverPlayerTrap(state, command.trapId);
     case "DISCOVER_TREE_CLUE":
       if (state.phase === "pickup" || state.phase === "day-ended") return state;
       return discoverTreeClue(state, command);
@@ -637,11 +914,18 @@ export const gameReducer = (state: GameState, command: GameCommand): GameState =
         ? state
         : withRevision({ ...state, flags: { ...state.flags, fieldTutorialSeen: true } });
     case "DISMISS_MORNING_BRIEF":
-      return state.morningBriefSeenDays.includes(state.day)
+      return state.morningBriefSeenDays.includes(state.day) &&
+        (!state.playerTrapKit.unlocked || state.flags.playerTrapTutorialSeen)
         ? state
         : withRevision({
             ...state,
-            morningBriefSeenDays: [...state.morningBriefSeenDays, state.day],
+            morningBriefSeenDays: state.morningBriefSeenDays.includes(state.day)
+              ? state.morningBriefSeenDays
+              : [...state.morningBriefSeenDays, state.day],
+            flags: {
+              ...state.flags,
+              playerTrapTutorialSeen: state.flags.playerTrapTutorialSeen || state.playerTrapKit.unlocked,
+            },
           });
     case "REST":
       if (state.phase === "pickup" || state.phase === "day-ended") return state;
@@ -667,9 +951,11 @@ export const gameReducer = (state: GameState, command: GameCommand): GameState =
     }
     case "START_NEXT_DAY":
       if (state.phase !== "day-ended") return state;
-      return withRevision(startDailyObservation({
+      {
+        const nextDay = state.day + 1;
+        const morning = startDailyObservation({
         ...state,
-        day: state.day + 1,
+        day: nextDay,
         timeMinutes: DAY_START,
         phase: "day",
         locationId: "grandma-house",
@@ -679,10 +965,17 @@ export const gameReducer = (state: GameState, command: GameCommand): GameState =
         buffs: { appearanceBoostUntil: 0, nextBoostExtensionMinutes: 0 },
         inspectionSessions: {},
         activeInspectionSessionId: undefined,
+        activePlayerTrapInspectionId: undefined,
         discoveredClueSessionIds: [],
         caughtEncounterIds: [],
         pendingBoundaryEvent: undefined,
-      }, state.day + 1));
+        playerTrapKit: {
+          ...state.playerTrapKit,
+          unlocked: state.playerTrapKit.unlocked || nextDay >= 2,
+        },
+      }, nextDay);
+        return withRevision(resolvePlayerTrapForDay(morning, nextDay));
+      }
     case "RESET_GAME":
       return createInitialGame(command.seed);
     default:

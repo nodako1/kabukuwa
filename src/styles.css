@@ -1934,6 +1934,300 @@ button:focus-visible {
   }
 }
 
+/* Player-set banana trap */
+.context-action-stack {
+  position: absolute;
+  z-index: 2300;
+  right: 13px;
+  bottom: 18px;
+  display: grid;
+  width: min(51%, 204px);
+  gap: 7px;
+}
+
+.context-action-stack .context-action-button {
+  position: relative;
+  right: auto;
+  bottom: auto;
+  width: 100%;
+}
+
+.context-secondary-button {
+  width: 100%;
+  min-height: 46px;
+  padding: 8px 11px;
+  border: 2px solid rgb(255 255 255 / 68%);
+  border-radius: 16px;
+  background: #d69c34;
+  color: #302a1f;
+  box-shadow: 0 4px 0 #9b6d23, 0 8px 14px rgb(37 34 23 / 20%);
+  font-size: 10px;
+  font-weight: 1000;
+  line-height: 1.35;
+  text-align: center;
+  touch-action: manipulation;
+}
+
+.context-secondary-button:active {
+  transform: translateY(2px);
+  box-shadow: 0 2px 0 #9b6d23;
+}
+
+.player-trap-marker {
+  width: auto !important;
+  min-width: 25px;
+  padding: 0 6px;
+  border-radius: 14px !important;
+  background: #826b42;
+}
+
+.player-trap-marker span {
+  margin-left: 3px;
+  font-size: 7px;
+  white-space: nowrap;
+}
+
+.player-trap-marker.phase-ready {
+  background: #c95a35;
+  animation: player-trap-ready 1.6s ease-in-out infinite;
+}
+
+.player-trap-marker.phase-opened { background: #4e6f6c; }
+
+@keyframes player-trap-ready {
+  50% { transform: translateY(-4px); }
+}
+
+.player-trap-action-sheet .sheet-content {
+  display: grid;
+  gap: 11px;
+}
+
+.trap-sheet-lead {
+  margin: 0;
+  color: #31543c;
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.player-trap-action-sheet p {
+  margin: 0;
+  color: #5e665e;
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.trap-phase-card {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 12px;
+  border-radius: 14px;
+  background: #f3e7c9;
+  color: #4f4d3f;
+}
+
+.trap-phase-card > span {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  background: #ca9234;
+  color: #fff9e8;
+  font-size: 19px;
+  font-weight: 1000;
+}
+
+.trap-sheet-details {
+  display: grid;
+  gap: 1px;
+  overflow: hidden;
+  margin: 0;
+  border-radius: 10px;
+  background: #ddcfb1;
+}
+
+.trap-sheet-details > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  background: #fffaf0;
+}
+
+.trap-sheet-details dt,
+.trap-sheet-details dd {
+  margin: 0;
+  font-size: 10px;
+}
+
+.trap-sheet-details dt { color: #88704e; }
+.trap-sheet-details dd { color: #3e5143; font-weight: 900; }
+
+.text-button {
+  min-height: 44px;
+  border: 0;
+  background: transparent;
+  color: #49604e;
+  font-weight: 900;
+}
+
+.map-player-trap-badge {
+  flex-basis: 100%;
+  padding: 3px 5px;
+  border-radius: 7px;
+  background: #f1dfb8;
+  color: #765622;
+  font-size: 7px;
+  font-style: normal;
+  font-weight: 1000;
+  text-align: center;
+}
+
+.map-player-trap-badge.phase-ready {
+  background: #f4d1c4;
+  color: #943c28;
+}
+
+.map-player-trap-badge.phase-opened {
+  background: #d8e7e1;
+  color: #315b55;
+}
+
+.morning-player-trap {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 12px;
+  border: 2px solid #d8b66c;
+  border-radius: 14px;
+  background: #fff2cd;
+}
+
+.morning-player-trap > span {
+  display: grid;
+  width: 43px;
+  height: 43px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  background: #bd7630;
+  color: #fff;
+  font-weight: 1000;
+}
+
+.morning-player-trap small,
+.morning-player-trap strong,
+.morning-player-trap p {
+  display: block;
+  margin: 0;
+}
+
+.morning-player-trap small { color: #8e682e; font-size: 8px; font-weight: 900; }
+.morning-player-trap strong { margin: 2px 0 4px; color: #3f503f; font-size: 11px; line-height: 1.4; }
+.morning-player-trap p { color: #65665a; font-size: 9px; line-height: 1.5; }
+.morning-player-trap.phase-ready { border-color: #ce7658; background: #fff0e8; }
+
+.journal-trap-status {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  background: #efe2c3;
+  color: #65522e;
+  font-size: 9px;
+}
+
+.journal-trap-status.phase-ready { background: #f4d6cb; color: #8d3e2d; }
+.journal-trap-status.phase-opened { background: #dce9e3; color: #315a54; }
+
+.player-trap-controls {
+  display: grid;
+  gap: 10px;
+}
+
+.player-trap-status-note strong,
+.player-trap-status-note span {
+  display: block;
+}
+
+.player-trap-status-note strong { color: #3e5342; font-size: 11px; }
+.player-trap-status-note span { margin-top: 3px; color: #73786f; font-size: 9px; line-height: 1.45; }
+
+.player-trap-inspection-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.player-trap-inspection-actions button {
+  min-height: 48px;
+  padding: 7px;
+  border: 0;
+  border-radius: 12px;
+  background: #dfe7d8;
+  color: #405443;
+  font-size: 9px;
+  font-weight: 900;
+  line-height: 1.35;
+}
+
+.player-trap-inspection-actions .recover-trap-button {
+  background: #295a3c;
+  color: #fff;
+}
+
+.inspection-confirm-backdrop {
+  position: absolute;
+  z-index: 30;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgb(21 36 27 / 72%);
+}
+
+.inspection-confirm-backdrop > section {
+  width: min(100%, 390px);
+  padding: 20px;
+  border-radius: 18px;
+  background: #fff7df;
+  box-shadow: 0 18px 45px rgb(0 0 0 / 35%);
+}
+
+.inspection-confirm-backdrop small { color: #967042; font-size: 8px; font-weight: 900; }
+.inspection-confirm-backdrop h3 { margin: 4px 0 9px; color: #294e37; font-size: 18px; }
+.inspection-confirm-backdrop p { margin: 0 0 13px; color: #5d665e; font-size: 11px; line-height: 1.6; }
+.inspection-confirm-backdrop button {
+  width: 100%;
+  min-height: 48px;
+  border: 0;
+  border-radius: 12px;
+  background: #275a3c;
+  color: #fff;
+  font-weight: 900;
+}
+.inspection-confirm-backdrop .secondary-confirm-button {
+  margin-top: 8px;
+  background: #eee1c5;
+  color: #6d4939;
+}
+
+@media (max-height: 700px) {
+  .context-action-stack { bottom: 12px; }
+  .context-action-stack .context-action-button { min-height: 64px; }
+  .context-secondary-button { min-height: 44px; padding-block: 5px; }
+  .player-trap-status-note span { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .player-trap-marker.phase-ready { animation: none; }
+}
+
 /* Loop-world edges and tree clues */
 .game-shell.inspection-open {
   grid-template-rows: auto minmax(0, 1fr);
@@ -3471,6 +3765,7 @@ button:focus-visible {
   position: relative;
   z-index: 1;
   display: flex;
+  flex-wrap: wrap;
   min-height: 64px;
   align-items: center;
   gap: 5px;
@@ -3478,6 +3773,11 @@ button:focus-visible {
   border: 1px solid #dfd3b9;
   border-radius: 12px;
   background: #fffdf4;
+}
+
+.field-map-node > span {
+  min-width: 0;
+  flex: 1 1 0;
 }
 
 .field-map-node > i {

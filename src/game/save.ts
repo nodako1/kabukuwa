@@ -1,7 +1,15 @@
 import { z } from "zod";
 import { fieldById, getSpawnPoint } from "../data/fields";
 import { initialTrapStates, legacySpotToTreeId, treeById } from "../data/trees";
-import type { FieldId, GameState, LocationId, TreeInspectionSession } from "../types/game";
+import type {
+  CaptureSource,
+  FieldId,
+  GameState,
+  LocationId,
+  Outcome,
+  Specimen,
+  TreeInspectionSession,
+} from "../types/game";
 import { getTimePeriod } from "./clock";
 import { getFieldCollisionRects, isPositionWalkable } from "./field";
 import { commitInspectionSession, generateInspectionSession } from "./inspection";
@@ -10,7 +18,8 @@ import { finalizeObservationJournal, migrateDailyRecords } from "./daily";
 
 export const SAVE_KEY = "kabukuwa.save.current";
 export const BACKUP_KEY = "kabukuwa.save.backup";
-export const MIGRATION_BACKUP_KEY = "kabukuwa.save.pre-v4";
+export const MIGRATION_BACKUP_KEY = "kabukuwa.save.pre-v5";
+export const VERSION4_MIGRATION_BACKUP_KEY = "kabukuwa.save.pre-v4";
 export const LEGACY_MIGRATION_BACKUP_KEY = "kabukuwa.save.pre-v3";
 
 export interface StorageLike {
@@ -42,7 +51,7 @@ const dailyNatureIds = [
   "moths-at-light",
   "still-summer",
 ] as const;
-const observationThemeIds = [
+const version4ObservationThemeIds = [
   "inspect-three-trees",
   "look-high-and-low",
   "trust-your-eyes",
@@ -52,6 +61,12 @@ const observationThemeIds = [
   "complete-one-tree",
   "walk-the-loop",
 ] as const;
+const observationThemeIds = [
+  ...version4ObservationThemeIds,
+  "set-player-trap",
+  "check-player-trap",
+] as const;
+const captureSourceIds = ["tree", "fixed-banana", "fixed-light", "player-banana"] as const;
 
 const specimenSchema = z.object({
   id: z.string(),
@@ -66,11 +81,32 @@ const specimenSchema = z.object({
   rankingEligible: z.boolean(),
 });
 
+const currentSpecimenSchema = specimenSchema.extend({
+  captureSource: z.enum(captureSourceIds),
+});
+
 const outcomeSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("empty"), spotId: z.string(), text: z.string() }),
   z.object({
     type: z.literal("caught"),
     specimen: specimenSchema,
+    isPersonalBest: z.boolean(),
+    isFirstCatch: z.boolean().optional(),
+  }),
+  z.object({
+    type: z.literal("dialogue"),
+    npcId: z.enum(npcIds),
+    text: z.string(),
+    unlockedSecretRoute: z.boolean(),
+  }),
+  z.object({ type: z.literal("notice"), title: z.string(), text: z.string() }),
+]);
+
+const currentOutcomeSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("empty"), spotId: z.string(), text: z.string() }),
+  z.object({
+    type: z.literal("caught"),
+    specimen: currentSpecimenSchema,
     isPersonalBest: z.boolean(),
     isFirstCatch: z.boolean().optional(),
   }),
@@ -118,6 +154,7 @@ const legacyFlagsSchema = z.object({
 });
 
 const currentFlagsSchema = legacyFlagsSchema.extend({ fieldTutorialSeen: z.boolean() });
+const version5FlagsSchema = currentFlagsSchema.extend({ playerTrapTutorialSeen: z.boolean() });
 
 const playerFieldSchema = z.object({
   fieldId: z.enum(fieldIds),
@@ -186,9 +223,13 @@ const inspectionSessionSchema = z.object({
 const dailyPlanSchema = z.object({
   day: z.number().int().positive(),
   natureId: z.enum(dailyNatureIds),
-  themeId: z.enum(observationThemeIds),
+  themeId: z.enum(version4ObservationThemeIds),
   rumorNpcId: z.enum(npcIds),
   rumorId: z.string(),
+});
+
+const currentDailyPlanSchema = dailyPlanSchema.extend({
+  themeId: z.enum(observationThemeIds),
 });
 
 const observationProgressSchema = z.object({
@@ -224,6 +265,16 @@ const observationJournalSchema = z.object({
   diaryLines: z.array(z.string()).min(1),
 });
 
+const currentObservationProgressSchema = observationProgressSchema.extend({
+  placedPlayerTrapIds: z.array(z.string()),
+  checkedPlayerTrapIds: z.array(z.string()),
+});
+
+const currentObservationJournalSchema = observationJournalSchema.extend({
+  placedPlayerTrapIds: z.array(z.string()),
+  checkedPlayerTrapIds: z.array(z.string()),
+});
+
 const semanticRefinement = (state: GameState, context: z.RefinementCtx) => {
   const field = fieldById[state.field.fieldId];
   const isHome = state.field.fieldId === "grandma-house" || state.field.fieldId === "backyard";
@@ -231,6 +282,8 @@ const semanticRefinement = (state: GameState, context: z.RefinementCtx) => {
   const activeSession = state.activeInspectionSessionId
     ? state.inspectionSessions[state.activeInspectionSessionId]
     : undefined;
+  const activePlayerTrapInspectionId = state.activePlayerTrapInspectionId;
+  const activeInspectionCount = Number(Boolean(activeSession)) + Number(Boolean(activePlayerTrapInspectionId));
 
   if (field.locationId && field.locationId !== state.locationId) invalid("location must match the current collection field");
   if (state.activeInspectionSessionId && (!activeSession || !activeSession.committed)) {
@@ -242,26 +295,28 @@ const semanticRefinement = (state: GameState, context: z.RefinementCtx) => {
       invalid("active inspection must belong to the current field and day");
     }
   }
-  if (state.pendingBoundaryEvent && !activeSession) invalid("a deferred boundary requires an active inspection");
+  if (state.pendingBoundaryEvent && activeInspectionCount !== 1) {
+    invalid("a deferred boundary requires exactly one active inspection");
+  }
   if (
     state.phase === "day" &&
     !(state.timeMinutes < 1080 || (
       state.timeMinutes === 1080 &&
       state.pendingBoundaryEvent === "pickup" &&
-      Boolean(activeSession)
+      activeInspectionCount === 1
     ))
   ) invalid("day phase must end before 18:00 unless inspection pickup is deferred");
-  if (state.phase === "pickup" && (state.timeMinutes !== 1080 || isHome || activeSession)) {
+  if (state.phase === "pickup" && (state.timeMinutes !== 1080 || isHome || activeInspectionCount > 0)) {
     invalid("pickup phase must be at 18:00 in a remote field");
   }
   if (
     state.phase === "evening" &&
     !(
       (state.timeMinutes >= 1080 && state.timeMinutes < 1200 && isHome) ||
-      (state.timeMinutes === 1200 && isHome && state.pendingBoundaryEvent === "day-ended" && activeSession)
+      (state.timeMinutes === 1200 && isHome && state.pendingBoundaryEvent === "day-ended" && activeInspectionCount === 1)
     )
   ) invalid("evening phase must be at home, with only an active inspection allowed at 20:00");
-  if (state.phase === "day-ended" && (state.timeMinutes !== 1200 || !isHome || activeSession)) {
+  if (state.phase === "day-ended" && (state.timeMinutes !== 1200 || !isHome || activeInspectionCount > 0)) {
     invalid("day-ended phase must be at 20:00 at home");
   }
   if (state.exploration) {
@@ -378,7 +433,7 @@ const dailySemanticRefinement = (state: GameState, context: z.RefinementCtx) => 
   }
 };
 
-export const gameStateSchema = z.object({
+export const version4GameStateSchema = z.object({
   schemaVersion: z.literal(4),
   contentVersion: z.literal(4),
   ...commonStateShape,
@@ -399,13 +454,136 @@ export const gameStateSchema = z.object({
   morningBriefSeenDays: z.array(z.number().int().positive()),
   pendingBoundaryEvent: z.enum(["pickup", "day-ended"]).optional(),
 }).superRefine((state, context) => {
+  semanticRefinement(state as unknown as GameState, context);
+  dailySemanticRefinement(state as unknown as GameState, context);
+});
+
+const playerTrapEncounterSchema = z.object({
+  id: z.string(),
+  insectId: z.enum(insectIds),
+  sizeMm: z.number(),
+  rankingEligible: z.literal(true),
+  caught: z.boolean(),
+  x: z.number().min(0).max(1),
+  y: z.number().min(0).max(1),
+});
+
+const playerTrapOutcomePlanSchema = z.object({
+  planVersion: z.literal(1),
+  resolvedDay: z.number().int().positive(),
+  resolvedNatureId: z.enum(dailyNatureIds),
+  presenceTier: z.enum(["none", "base", "daily-nature", "player-trap"]),
+  encounter: playerTrapEncounterSchema.optional(),
+  ambientPlacements: z.array(ambientPlacementSchema).min(2).max(6),
+});
+
+const playerTrapStateSchema = z.object({
+  id: z.string(),
+  kind: z.literal("banana"),
+  sequence: z.number().int().positive(),
+  treeId: z.string(),
+  installedDay: z.number().int().positive(),
+  installedAtMinutes: z.number().int().min(360).max(1200),
+  readyDay: z.number().int().positive(),
+  phase: z.enum(["waiting", "ready", "opened"]),
+  openedAtMinutes: z.number().int().min(360).max(1200).optional(),
+  outcomePlan: playerTrapOutcomePlanSchema.optional(),
+});
+
+const playerTrapKitSchema = z.object({
+  unlocked: z.boolean(),
+  nextSequence: z.number().int().positive(),
+  activeTrap: playerTrapStateSchema.optional(),
+});
+
+export const gameStateStructureSchema = z.object({
+  schemaVersion: z.literal(5),
+  contentVersion: z.literal(5),
+  ...commonStateShape,
+  specimens: z.array(currentSpecimenSchema),
+  pendingOutcome: currentOutcomeSchema.optional(),
+  field: playerFieldSchema,
+  flags: version5FlagsSchema,
+  inspectionSessions: z.record(z.string(), inspectionSessionSchema),
+  activeInspectionSessionId: z.string().optional(),
+  discoveredClueSessionIds: z.array(z.string()),
+  caughtEncounterIds: z.array(z.string()),
+  trapStates: z.record(z.string(), z.object({
+    kind: z.enum(["banana", "light"]),
+    installed: z.boolean(),
+  })),
+  playerTrapKit: playerTrapKitSchema,
+  activePlayerTrapInspectionId: z.string().optional(),
+  dailyPlansByDay: z.record(z.string(), currentDailyPlanSchema),
+  observationProgressByDay: z.record(z.string(), currentObservationProgressSchema),
+  observationJournalByDay: z.record(z.string(), currentObservationJournalSchema),
+  heardRumorDays: z.array(z.number().int().positive()),
+  morningBriefSeenDays: z.array(z.number().int().positive()),
+  pendingBoundaryEvent: z.enum(["pickup", "day-ended"]).optional(),
+});
+
+const playerTrapSemanticRefinement = (state: GameState, context: z.RefinementCtx) => {
+  const invalid = (message: string) => context.addIssue({ code: "custom", message });
+  const trap = state.playerTrapKit.activeTrap;
+  if (!state.playerTrapKit.unlocked && trap) invalid("a locked player trap kit cannot have an active trap");
+  if (state.activeInspectionSessionId && state.activePlayerTrapInspectionId) {
+    invalid("tree and player trap inspections are mutually exclusive");
+  }
+  if (state.activePlayerTrapInspectionId && state.activePlayerTrapInspectionId !== trap?.id) {
+    invalid("active player trap inspection must reference the active trap");
+  }
+  if (state.activePlayerTrapInspectionId && trap?.phase !== "opened") {
+    invalid("active player trap inspection must reference an opened trap");
+  }
+  for (const records of [state.observationProgressByDay, state.observationJournalByDay]) {
+    for (const record of Object.values(records)) {
+      if (
+        new Set(record.placedPlayerTrapIds).size !== record.placedPlayerTrapIds.length ||
+        new Set(record.checkedPlayerTrapIds).size !== record.checkedPlayerTrapIds.length
+      ) invalid("player trap observation ids must be unique");
+    }
+  }
+  if (!trap) return;
+
+  const tree = treeById[trap.treeId];
+  if (!tree || tree.playerTrapSlot !== "banana") invalid("player trap references an unavailable tree");
+  if (trap.readyDay !== trap.installedDay + 1) invalid("player trap ready day is inconsistent");
+  if (state.playerTrapKit.nextSequence <= trap.sequence) invalid("player trap sequence is inconsistent");
+  if (trap.phase === "waiting" && (trap.outcomePlan || trap.openedAtMinutes !== undefined)) {
+    invalid("waiting player trap cannot have an outcome or opened time");
+  }
+  if (trap.phase === "ready" && (!trap.outcomePlan || trap.openedAtMinutes !== undefined)) {
+    invalid("ready player trap requires only an outcome plan");
+  }
+  if (trap.phase === "opened" && (!trap.outcomePlan || trap.openedAtMinutes === undefined)) {
+    invalid("opened player trap requires an outcome and opened time");
+  }
+  if (trap.outcomePlan && trap.outcomePlan.resolvedDay !== trap.readyDay) {
+    invalid("player trap outcome day is inconsistent");
+  }
+  if (state.activePlayerTrapInspectionId && tree?.fieldId !== state.field.fieldId) {
+    invalid("active player trap inspection must be in the current field");
+  }
+  const encounter = trap.outcomePlan?.encounter;
+  if (encounter) {
+    const specimenCount = state.specimens.filter((specimen) => specimen.id === encounter.id).length;
+    if ((encounter.caught && specimenCount !== 1) || (!encounter.caught && specimenCount !== 0)) {
+      invalid("player trap encounter capture state is inconsistent");
+    }
+  }
+
+};
+
+export const gameStateSchema = gameStateStructureSchema.superRefine((state, context) => {
   semanticRefinement(state as GameState, context);
   dailySemanticRefinement(state as GameState, context);
+  playerTrapSemanticRefinement(state as GameState, context);
 });
 
 type LegacyGameState = z.infer<typeof legacyGameStateSchema>;
 type Version2GameState = z.infer<typeof version2GameStateSchema>;
 type Version3GameState = z.infer<typeof version3GameStateSchema>;
+export type Version4GameState = z.infer<typeof version4GameStateSchema>;
 
 const nearestSafePoint = (
   fieldId: FieldId,
@@ -470,37 +648,90 @@ export const migrateLegacyGameState = (legacy: LegacyGameState): Version2GameSta
   };
 };
 
-const repairPlayerPosition = (state: GameState): GameState => {
-  const field = fieldById[state.field.fieldId];
+const repairPlayerPosition = <T,>(state: T): T => {
+  const gameState = state as unknown as GameState;
+  const field = fieldById[gameState.field.fieldId];
   const closedExitIds = field.exits
-    .filter((exit) => !isFieldExitAvailable(state, exit).available)
+    .filter((exit) => !isFieldExitAvailable(gameState, exit).available)
     .map((exit) => exit.id);
-  const repaired = nearestSafePoint(state.field.fieldId, [
-    { x: state.field.x, y: state.field.y },
-    { x: state.field.lastSafeX, y: state.field.lastSafeY },
+  const repaired = nearestSafePoint(gameState.field.fieldId, [
+    { x: gameState.field.x, y: gameState.field.y },
+    { x: gameState.field.lastSafeX, y: gameState.field.lastSafeY },
   ], closedExitIds);
-  const discoveredFieldIds = state.field.discoveredFieldIds.includes(state.field.fieldId)
-    ? state.field.discoveredFieldIds
-    : [...state.field.discoveredFieldIds, state.field.fieldId];
+  const discoveredFieldIds = gameState.field.discoveredFieldIds.includes(gameState.field.fieldId)
+    ? gameState.field.discoveredFieldIds
+    : [...gameState.field.discoveredFieldIds, gameState.field.fieldId];
   if (
-    repaired.x === state.field.x &&
-    repaired.y === state.field.y &&
-    repaired.x === state.field.lastSafeX &&
-    repaired.y === state.field.lastSafeY &&
-    discoveredFieldIds === state.field.discoveredFieldIds
+    repaired.x === gameState.field.x &&
+    repaired.y === gameState.field.y &&
+    repaired.x === gameState.field.lastSafeX &&
+    repaired.y === gameState.field.lastSafeY &&
+    discoveredFieldIds === gameState.field.discoveredFieldIds
   ) return state;
   return {
-    ...state,
+    ...gameState,
     field: {
-      ...state.field,
+      ...gameState.field,
       x: repaired.x,
       y: repaired.y,
       lastSafeX: repaired.x,
       lastSafeY: repaired.y,
       discoveredFieldIds,
     },
-  };
+  } as T;
 };
+
+const captureSourceForLegacySpecimen = (
+  specimen: { treeId?: string; spotId: string },
+): CaptureSource => {
+  const treeId = specimen.treeId ?? legacySpotToTreeId[specimen.spotId] ?? specimen.spotId;
+  const trapKind = treeById[treeId]?.trapKind;
+  if (trapKind === "banana") return "fixed-banana";
+  if (trapKind === "light") return "fixed-light";
+  return "tree";
+};
+
+const migrateSpecimen = <T extends { treeId?: string; spotId: string }>(specimen: T): T & Specimen => ({
+  ...specimen,
+  captureSource: captureSourceForLegacySpecimen(specimen),
+}) as T & Specimen;
+
+const migrateOutcome = (
+  outcome: Version4GameState["pendingOutcome"],
+): Outcome | undefined => outcome?.type === "caught"
+  ? { ...outcome, specimen: migrateSpecimen(outcome.specimen) }
+  : outcome as Outcome | undefined;
+
+export const migrateVersion4GameState = (legacy: Version4GameState): GameState => repairPlayerPosition({
+  ...legacy,
+  schemaVersion: 5,
+  contentVersion: 5,
+  specimens: legacy.specimens.map(migrateSpecimen),
+  pendingOutcome: migrateOutcome(legacy.pendingOutcome),
+  flags: {
+    ...legacy.flags,
+    playerTrapTutorialSeen: false,
+  },
+  playerTrapKit: {
+    unlocked: legacy.day >= 2,
+    nextSequence: 1,
+  },
+  activePlayerTrapInspectionId: undefined,
+  observationProgressByDay: Object.fromEntries(
+    Object.entries(legacy.observationProgressByDay).map(([day, progress]) => [day, {
+      ...progress,
+      placedPlayerTrapIds: [],
+      checkedPlayerTrapIds: [],
+    }]),
+  ),
+  observationJournalByDay: Object.fromEntries(
+    Object.entries(legacy.observationJournalByDay).map(([day, journal]) => [day, {
+      ...journal,
+      placedPlayerTrapIds: [],
+      checkedPlayerTrapIds: [],
+    }]),
+  ),
+} as GameState);
 
 export const migrateVersion2GameState = (legacy: Version2GameState): GameState => {
   const version3Like = {
@@ -524,12 +755,13 @@ export const migrateVersion2GameState = (legacy: Version2GameState): GameState =
     trapStates: initialTrapStates(),
     pendingBoundaryEvent: undefined,
   };
-  const base = repairPlayerPosition({
+  const version4Like = repairPlayerPosition({
     ...version3Like,
     schemaVersion: 4,
     contentVersion: 4,
     ...migrateDailyRecords(version3Like as unknown as Parameters<typeof migrateDailyRecords>[0]),
-  } as GameState);
+  } as unknown as Version4GameState);
+  const base = migrateVersion4GameState(version4Like);
 
   if (!base.exploration) return base.phase === "day-ended" ? finalizeObservationJournal(base) : base;
   const uniqueSpotIds = [...new Set(base.exploration.searchedSpotIds)];
@@ -558,19 +790,25 @@ export const migrateVersion2GameState = (legacy: Version2GameState): GameState =
 };
 
 export const migrateVersion3GameState = (legacy: Version3GameState): GameState => {
-  const migrated = repairPlayerPosition({
+  const version4Like = repairPlayerPosition({
     ...legacy,
     schemaVersion: 4,
     contentVersion: 4,
     ...migrateDailyRecords(legacy as unknown as Parameters<typeof migrateDailyRecords>[0]),
-  } as GameState);
+  } as unknown as Version4GameState);
+  const migrated = migrateVersion4GameState(version4Like);
   return migrated.phase === "day-ended" ? finalizeObservationJournal(migrated) : migrated;
 };
 
-const saveEnvelopeSchema = z.object({
+const saveEnvelopeStructureSchema = z.object({
+  schemaVersion: z.literal(5),
+  savedAt: z.string(),
+  state: gameStateStructureSchema,
+});
+const version4SaveEnvelopeSchema = z.object({
   schemaVersion: z.literal(4),
   savedAt: z.string(),
-  state: gameStateSchema,
+  state: version4GameStateSchema,
 });
 const version3SaveEnvelopeSchema = z.object({
   schemaVersion: z.literal(3),
@@ -599,32 +837,101 @@ const browserStorage = (): StorageLike | undefined => {
 
 interface ParsedState {
   state: GameState;
-  migrated: boolean;
+  needsPreV5Backup: boolean;
 }
+
+const repairPlayerTrapContent = (state: GameState): { state: GameState; repaired: boolean } => {
+  const trap = state.playerTrapKit.activeTrap;
+  if (!trap) return { state, repaired: false };
+  const tree = treeById[trap.treeId];
+  if (tree?.playerTrapSlot === "banana") return { state, repaired: false };
+
+  let repaired: GameState = {
+    ...state,
+    activePlayerTrapInspectionId: undefined,
+    playerTrapKit: { ...state.playerTrapKit, activeTrap: undefined },
+    pendingOutcome: state.pendingOutcome ?? {
+      type: "notice",
+      title: "仕掛けを手元へ戻しました",
+      text: "村の木の変化に合わせて、トラップセットを安全に回収しました。",
+    },
+  };
+  if (repaired.pendingBoundaryEvent === "pickup") {
+    repaired = {
+      ...repaired,
+      phase: "pickup",
+      timeMinutes: 1080,
+      pendingBoundaryEvent: undefined,
+      exploration: repaired.exploration
+        ? {
+            ...repaired.exploration,
+            period: getTimePeriod(1080),
+            focusedSpotId: undefined,
+            searchedSpotIds: [],
+          }
+        : undefined,
+    };
+  } else if (repaired.pendingBoundaryEvent === "day-ended") {
+    repaired = finalizeObservationJournal({
+      ...repaired,
+      phase: "day-ended",
+      timeMinutes: 1200,
+      pendingBoundaryEvent: undefined,
+      exploration: repaired.exploration
+        ? {
+            ...repaired.exploration,
+            period: getTimePeriod(1200),
+            focusedSpotId: undefined,
+            searchedSpotIds: [],
+          }
+        : undefined,
+    });
+  }
+  return { state: repaired, repaired: true };
+};
 
 const parseSavedState = (raw: string | null): ParsedState | null => {
   if (!raw) return null;
   try {
     const parsed: unknown = JSON.parse(raw);
-    const current = saveEnvelopeSchema.safeParse(parsed);
-    if (current.success) return { state: repairPlayerPosition(current.data.state as GameState), migrated: false };
+    const current = saveEnvelopeStructureSchema.safeParse(parsed);
+    if (current.success) {
+      const contentRepair = repairPlayerTrapContent(current.data.state as GameState);
+      const repaired = repairPlayerPosition(contentRepair.state);
+      const checked = gameStateSchema.safeParse(repaired);
+      return checked.success
+        ? { state: checked.data as GameState, needsPreV5Backup: false }
+        : null;
+    }
+    const version4 = version4SaveEnvelopeSchema.safeParse(parsed);
+    if (version4.success) {
+      const migrated = migrateVersion4GameState(version4.data.state);
+      const checked = gameStateSchema.safeParse(migrated);
+      return checked.success ? { state: checked.data as GameState, needsPreV5Backup: true } : null;
+    }
     const version3 = version3SaveEnvelopeSchema.safeParse(parsed);
     if (version3.success) {
       const migrated = migrateVersion3GameState(version3.data.state);
       const checked = gameStateSchema.safeParse(migrated);
-      return checked.success ? { state: repairPlayerPosition(checked.data as GameState), migrated: true } : null;
+      return checked.success
+        ? { state: repairPlayerPosition(checked.data as GameState), needsPreV5Backup: true }
+        : null;
     }
     const version2 = version2SaveEnvelopeSchema.safeParse(parsed);
     if (version2.success) {
       const migrated = migrateVersion2GameState(version2.data.state);
       const checked = gameStateSchema.safeParse(migrated);
-      return checked.success ? { state: repairPlayerPosition(checked.data as GameState), migrated: true } : null;
+      return checked.success
+        ? { state: repairPlayerPosition(checked.data as GameState), needsPreV5Backup: true }
+        : null;
     }
     const legacy = legacySaveEnvelopeSchema.safeParse(parsed);
     if (!legacy.success) return null;
     const migrated = migrateVersion2GameState(migrateLegacyGameState(legacy.data.state));
     const checked = gameStateSchema.safeParse(migrated);
-    return checked.success ? { state: repairPlayerPosition(checked.data as GameState), migrated: true } : null;
+    return checked.success
+      ? { state: repairPlayerPosition(checked.data as GameState), needsPreV5Backup: true }
+      : null;
   } catch {
     return null;
   }
@@ -636,7 +943,7 @@ export const loadGame = (storage = browserStorage()): GameState | null => {
     const currentRaw = storage.getItem(SAVE_KEY);
     const current = parseSavedState(currentRaw);
     if (current) {
-      if (current.migrated && currentRaw) {
+      if (current.needsPreV5Backup && currentRaw) {
         try {
           storage.setItem(MIGRATION_BACKUP_KEY, currentRaw);
         } catch {
@@ -647,7 +954,7 @@ export const loadGame = (storage = browserStorage()): GameState | null => {
     }
     const backupRaw = storage.getItem(BACKUP_KEY);
     const backup = parseSavedState(backupRaw);
-    if (backup?.migrated && backupRaw) {
+    if (backup?.needsPreV5Backup && backupRaw) {
       try {
         storage.setItem(MIGRATION_BACKUP_KEY, backupRaw);
       } catch {
@@ -667,7 +974,7 @@ export const saveGame = (state: GameState, storage = browserStorage()): void => 
     if (current) storage.setItem(BACKUP_KEY, current);
     storage.setItem(
       SAVE_KEY,
-      JSON.stringify({ schemaVersion: 4, savedAt: new Date().toISOString(), state }),
+      JSON.stringify({ schemaVersion: 5, savedAt: new Date().toISOString(), state }),
     );
   } catch {
     // Saving is best-effort. Storage restrictions or quota errors must not stop the game.
@@ -680,6 +987,7 @@ export const deleteSave = (storage = browserStorage()): void => {
     storage.removeItem(SAVE_KEY);
     storage.removeItem(BACKUP_KEY);
     storage.removeItem(MIGRATION_BACKUP_KEY);
+    storage.removeItem(VERSION4_MIGRATION_BACKUP_KEY);
     storage.removeItem(LEGACY_MIGRATION_BACKUP_KEY);
   } catch {
     // Ignore browser storage restrictions.
