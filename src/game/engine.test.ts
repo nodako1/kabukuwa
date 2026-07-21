@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { getSpawnPoint } from "../data/fields";
+import { fieldById, getSpawnPoint } from "../data/fields";
 import { insects } from "../data/insects";
-import { locationById } from "../data/locations";
-import type { FieldId, GameState } from "../types/game";
+import { treeById } from "../data/trees";
+import type { FieldId, GameCommand, GameState } from "../types/game";
+import { PLAYER_RADIUS } from "./field";
 import { createInitialGame, gameReducer } from "./engine";
-import { isLocationAvailable, rollEncounter } from "./rules";
+import { getInspectionSessionId } from "./inspection";
+import { isFieldExitAvailable, isLocationAvailable, rollEncounter } from "./rules";
 
 const playerFieldAt = (fieldId: FieldId, x?: number, y?: number): GameState["field"] => {
   const point = getSpawnPoint(fieldId);
@@ -22,374 +24,313 @@ const playerFieldAt = (fieldId: FieldId, x?: number, y?: number): GameState["fie
 const stateAt = (overrides: Partial<GameState>): GameState => {
   const initial = createInitialGame("test-summer");
   const fieldId = overrides.field?.fieldId ?? overrides.locationId ?? initial.field.fieldId;
-  return {
-    ...initial,
-    ...overrides,
-    field: overrides.field ?? playerFieldAt(fieldId),
-  };
+  return { ...initial, ...overrides, field: overrides.field ?? playerFieldAt(fieldId) };
+};
+
+const edgeCommand = (
+  state: GameState,
+  exitId: string,
+  token = `${state.field.fieldId}:${exitId}:${state.revision}`,
+): Extract<GameCommand, { type: "TRAVEL_EDGE" }> => {
+  const field = fieldById[state.field.fieldId];
+  const exit = field.exits.find((candidate) => candidate.id === exitId)!;
+  const coordinate = (exit.rangeStart + exit.rangeEnd) / 2;
+  const x = exit.side === "left"
+    ? PLAYER_RADIUS
+    : exit.side === "right"
+      ? field.width - PLAYER_RADIUS
+      : coordinate;
+  const y = exit.side === "top"
+    ? PLAYER_RADIUS
+    : exit.side === "bottom"
+      ? field.height - PLAYER_RADIUS
+      : coordinate;
+  const facing = exit.side === "top" ? "up" : exit.side === "bottom" ? "down" : exit.side;
+  return { type: "TRAVEL_EDGE", exitId, x, y, facing, transitionToken: token };
+};
+
+const travel = (state: GameState, exitId: string, token?: string): GameState =>
+  gameReducer(state, edgeCommand(state, exitId, token));
+
+const atTree = (
+  treeId: string,
+  overrides: Partial<GameState> = {},
+): GameState => {
+  const tree = treeById[treeId];
+  const field = fieldById[tree.fieldId];
+  const locationId = field.locationId!;
+  const base = stateAt({
+    locationId,
+    field: playerFieldAt(tree.fieldId, tree.x, tree.y + 70),
+    visitCounters: { [locationId]: 1 },
+    exploration: {
+      locationId,
+      visitIndex: 1,
+      period: "day",
+      searchedSpotIds: [],
+    },
+  });
+  return { ...base, ...overrides, field: overrides.field ?? base.field };
 };
 
 describe("game engine", () => {
-  it("starts at grandma's house at 6:00", () => {
+  it("starts Version 3 at grandma's house at 6:00", () => {
     const state = createInitialGame("fixed");
-    expect(state.day).toBe(1);
+    expect(state.schemaVersion).toBe(3);
     expect(state.timeMinutes).toBe(360);
     expect(state.locationId).toBe("grandma-house");
     expect(state.field.fieldId).toBe("grandma-house");
+    expect(Object.keys(state.trapStates)).toEqual(expect.arrayContaining(["backyard-banana", "backyard-light"]));
+  });
+
+  it("walks the complete clockwise loop and returns home in 40 minutes", () => {
+    let state = createInitialGame("clockwise");
+    const route: Array<[FieldId, string]> = [
+      ["grandma-house", "to-paddy"],
+      ["paddy-road", "to-shrine"],
+      ["shrine", "to-bamboo"],
+      ["bamboo-grove", "to-school"],
+      ["school", "to-oak"],
+      ["oak-forest", "to-mixed"],
+      ["mixed-forest", "to-road"],
+      ["forest-road", "to-house"],
+    ];
+    for (const [fieldId, exitId] of route) {
+      expect(state.field.fieldId).toBe(fieldId);
+      state = travel(state, exitId);
+    }
+    expect(state.field.fieldId).toBe("grandma-house");
+    expect(state.timeMinutes).toBe(400);
+  });
+
+  it("walks the complete counterclockwise loop and returns home in 40 minutes", () => {
+    let state = createInitialGame("counterclockwise");
+    for (const exitId of ["to-forest", "to-mixed", "to-oak", "to-school", "to-bamboo", "to-shrine", "to-paddy", "to-house"]) {
+      state = travel(state, exitId);
+    }
+    expect(state.field.fieldId).toBe("grandma-house");
+    expect(state.timeMinutes).toBe(400);
+  });
+
+  it("treats a repeated transition token as an idempotent no-op", () => {
+    const initial = createInitialGame("token");
+    const command = edgeCommand(initial, "to-paddy", "same-token");
+    const arrived = gameReducer(initial, command);
+    expect(arrived.field.fieldId).toBe("paddy-road");
+    expect(gameReducer(arrived, command)).toBe(arrived);
+  });
+
+  it("does not travel from outside an exit opening or while facing inward", () => {
+    const state = createInitialGame("bad-edge");
+    const wrongRange = { ...edgeCommand(state, "to-paddy"), y: 100 };
+    expect(gameReducer(state, wrongRange)).toBe(state);
+    const wrongFacing = { ...edgeCommand(state, "to-paddy"), facing: "left" as const };
+    expect(gameReducer(state, wrongFacing)).toBe(state);
+  });
+
+  it("opens one deterministic inspection session and charges only once", () => {
+    const before = atTree("mixed-tree-1", { timeMinutes: 600 });
+    const opened = gameReducer(before, { type: "OPEN_TREE_INSPECTION", treeId: "mixed-tree-1" });
+    expect(opened.timeMinutes).toBe(615);
+    expect(opened.activeInspectionSessionId).toBeTruthy();
+    const sessionId = opened.activeInspectionSessionId!;
+    const session = opened.inspectionSessions[sessionId];
+    const tree = treeById[session.treeId];
+    for (const point of tree.inspectionPoints) {
+      const changed = gameReducer(opened, { type: "VIEW_INSPECTION_POINT", pointId: point.id });
+      expect(changed.timeMinutes).toBe(615);
+    }
+    const closed = gameReducer(opened, { type: "CLOSE_TREE_INSPECTION" });
+    const moved = {
+      ...closed,
+      field: {
+        ...closed.field,
+        x: closed.field.x + 12,
+        facing: "left" as const,
+      },
+    };
+    const reopened = gameReducer(moved, { type: "OPEN_TREE_INSPECTION", treeId: "mixed-tree-1" });
+    expect(reopened.timeMinutes).toBe(615);
+    expect(reopened.activeInspectionSessionId).toBe(sessionId);
+    const closedAgain = gameReducer(reopened, { type: "CLOSE_TREE_INSPECTION" });
+    expect(closedAgain.field.x).toBe(moved.field.x);
+    expect(closedAgain.field.facing).toBe("left");
+  });
+
+  it("keeps the plan unchanged when points are viewed", () => {
+    let state = atTree("oak-tree-3", { timeMinutes: 600, worldSeed: "same-plan" });
+    state = gameReducer(state, { type: "OPEN_TREE_INSPECTION", treeId: "oak-tree-3" });
+    const sessionId = state.activeInspectionSessionId!;
+    const original = structuredClone(state.inspectionSessions[sessionId]);
+    for (const point of treeById["oak-tree-3"].inspectionPoints.slice(1)) {
+      state = gameReducer(state, { type: "VIEW_INSPECTION_POINT", pointId: point.id });
+    }
+    expect(state.inspectionSessions[sessionId].catchableEncounter).toEqual(original.catchableEncounter);
+    expect(state.inspectionSessions[sessionId].ambientByPointId).toEqual(original.ambientByPointId);
+    expect(state.inspectionSessions[sessionId].clueVisible).toBe(original.clueVisible);
+  });
+
+  it("does not unlock a later point before its prerequisite", () => {
+    let state = atTree("mixed-tree-3", { timeMinutes: 600 });
+    state = gameReducer(state, { type: "OPEN_TREE_INSPECTION", treeId: "mixed-tree-3" });
+    const sessionId = state.activeInspectionSessionId!;
+    const root = treeById["mixed-tree-3"].inspectionPoints.at(-1)!;
+    const blocked = gameReducer(state, { type: "VIEW_INSPECTION_POINT", pointId: root.id });
+    expect(blocked).toBe(state);
+    const crack = treeById["mixed-tree-3"].inspectionPoints[1];
+    state = gameReducer(state, { type: "VIEW_INSPECTION_POINT", pointId: crack.id });
+    state = gameReducer(state, { type: "VIEW_INSPECTION_POINT", pointId: root.id });
+    expect(state.inspectionSessions[sessionId].currentPointId).toBe(root.id);
+  });
+
+  it("records one specimen even when the same encounter is submitted twice", () => {
+    let opened: GameState | undefined;
+    for (let index = 0; index < 3000 && !opened; index += 1) {
+      const candidate = atTree("oak-tree-1", { timeMinutes: 600, worldSeed: `catch-${index}` });
+      const next = gameReducer(candidate, { type: "OPEN_TREE_INSPECTION", treeId: "oak-tree-1" });
+      if (next.inspectionSessions[next.activeInspectionSessionId!].catchableEncounter) opened = next;
+    }
+    expect(opened).toBeDefined();
+    let state = opened!;
+    const session = state.inspectionSessions[state.activeInspectionSessionId!];
+    const encounter = session.catchableEncounter!;
+    for (const point of treeById[session.treeId].inspectionPoints) {
+      state = gameReducer(state, { type: "VIEW_INSPECTION_POINT", pointId: point.id });
+      if (point.id === encounter.pointId) break;
+    }
+    state = gameReducer(state, { type: "CATCH_INSPECTION_ENCOUNTER", encounterId: encounter.id });
+    expect(state.specimens).toHaveLength(1);
+    expect(state.specimens[0].treeId).toBe(session.treeId);
+    expect(state.specimens[0].inspectionPointId).toBe(encounter.pointId);
+    state = gameReducer(state, { type: "ACKNOWLEDGE_OUTCOME" });
+    state = gameReducer(state, { type: "CATCH_INSPECTION_ENCOUNTER", encounterId: encounter.id });
+    expect(state.specimens).toHaveLength(1);
+  });
+
+  it("defers the 18:00 pickup until a remote close-up is closed", () => {
+    let state = atTree("oak-tree-3", {
+      timeMinutes: 1075,
+      exploration: {
+        locationId: "oak-forest",
+        visitIndex: 1,
+        period: "evening",
+        searchedSpotIds: [],
+      },
+    });
+    state = gameReducer(state, { type: "OPEN_TREE_INSPECTION", treeId: "oak-tree-3" });
+    expect(state.timeMinutes).toBe(1080);
     expect(state.phase).toBe("day");
+    expect(state.pendingBoundaryEvent).toBe("pickup");
+    const secondPoint = treeById["oak-tree-3"].inspectionPoints[1];
+    state = gameReducer(state, { type: "VIEW_INSPECTION_POINT", pointId: secondPoint.id });
+    expect(state.inspectionSessions[state.activeInspectionSessionId!].currentPointId).toBe(secondPoint.id);
+    state = gameReducer(state, { type: "CLOSE_TREE_INSPECTION" });
+    expect(state.phase).toBe("pickup");
+    expect(state.activeInspectionSessionId).toBeUndefined();
   });
 
-  it("travels through connected field exits and advances time", () => {
-    let state = stateAt({ field: playerFieldAt("grandma-house", 590, 105) });
-    state = gameReducer(state, { type: "TRAVEL_EXIT", exitId: "to-paddy" });
-    expect(state.field.fieldId).toBe("paddy-road");
-    expect(state.locationId).toBe("grandma-house");
-    expect(state.timeMinutes).toBe(365);
-    expect(state.field.discoveredFieldIds).toContain("paddy-road");
-
-    state = {
-      ...state,
-      field: { ...state.field, x: 450, y: 90, lastSafeX: 450, lastSafeY: 90 },
-    };
-    state = gameReducer(state, { type: "TRAVEL_EXIT", exitId: "to-shrine" });
-    expect(state.field.fieldId).toBe("shrine");
-    expect(state.locationId).toBe("shrine");
-    expect(state.timeMinutes).toBe(370);
-    expect(state.exploration?.locationId).toBe("shrine");
-  });
-
-  it("requires the player to approach a tree before inspecting it", () => {
-    const far = stateAt({
-      timeMinutes: 600,
-      locationId: "mixed-forest",
-      visitCounters: { "mixed-forest": 1 },
+  it("defers the 20:00 summary until a backyard close-up is closed", () => {
+    let state = atTree("backyard-banana", {
+      timeMinutes: 1190,
+      phase: "evening",
       exploration: {
-        locationId: "mixed-forest",
+        locationId: "backyard",
         visitIndex: 1,
-        period: "day",
+        period: "night",
         searchedSpotIds: [],
       },
     });
-    const blocked = gameReducer(far, { type: "INSPECT_SPOT", spotId: "mixed-tree-1" });
-    expect(blocked.timeMinutes).toBe(600);
-    expect(blocked.pendingOutcome?.type).toBe("notice");
-
-    const near = {
-      ...far,
-      field: playerFieldAt("mixed-forest", 190, 350),
-    };
-    const inspected = gameReducer(near, { type: "INSPECT_SPOT", spotId: "mixed-tree-1" });
-    expect(inspected.timeMinutes).toBe(615);
-    expect(inspected.exploration?.searchedSpotIds).toContain("mixed-tree-1");
+    state = gameReducer(state, { type: "OPEN_TREE_INSPECTION", treeId: "backyard-banana" });
+    expect(state.timeMinutes).toBe(1200);
+    expect(state.phase).toBe("evening");
+    expect(state.pendingBoundaryEvent).toBe("day-ended");
+    state = gameReducer(state, { type: "CLOSE_TREE_INSPECTION" });
+    expect(state.phase).toBe("day-ended");
   });
 
-  it("interrupts a remote action at 18:00, then returns home at 18:15", () => {
-    const remote = stateAt({
-      timeMinutes: 1065,
-      locationId: "mixed-forest",
-      visitCounters: { "mixed-forest": 1 },
-      exploration: {
-        locationId: "mixed-forest",
-        visitIndex: 1,
-        period: "evening",
-        searchedSpotIds: [],
-      },
-    });
-
-    const pickup = gameReducer(remote, { type: "REST", minutes: 30 });
-    expect(pickup.phase).toBe("pickup");
-    expect(pickup.timeMinutes).toBe(1080);
-    expect(pickup.locationId).toBe("mixed-forest");
-
-    const home = gameReducer(pickup, { type: "COMPLETE_PICKUP" });
-    expect(home.phase).toBe("evening");
-    expect(home.timeMinutes).toBe(1095);
-    expect(home.locationId).toBe("grandma-house");
-    expect(home.flags.pickupCompletedDay).toBe(1);
-  });
-
-  it("does not trigger pickup when already at home", () => {
-    const home = stateAt({ timeMinutes: 1065, locationId: "grandma-house" });
-    const evening = gameReducer(home, { type: "REST", minutes: 30 });
-    expect(evening.phase).toBe("evening");
-    expect(evening.timeMinutes).toBe(1095);
-    expect(evening.locationId).toBe("grandma-house");
-  });
-
-  it("still triggers pickup when a remote-to-home move crosses 18:00", () => {
-    const remote = stateAt({
-      timeMinutes: 1065,
-      locationId: "mixed-forest",
-      visitCounters: { "mixed-forest": 1 },
-      exploration: {
-        locationId: "mixed-forest",
-        visitIndex: 1,
-        period: "evening",
-        searchedSpotIds: [],
-      },
-    });
-    const pickup = gameReducer(remote, { type: "MOVE", locationId: "grandma-house" });
-    expect(pickup.phase).toBe("pickup");
-    expect(pickup.timeMinutes).toBe(1080);
-    expect(pickup.locationId).toBe("mixed-forest");
-  });
-
-  it("allows only the house and backyard after 18:00", () => {
-    const night = stateAt({ timeMinutes: 1095, phase: "evening" });
-    expect(isLocationAvailable(night, "backyard").available).toBe(true);
-    expect(isLocationAvailable(night, "grandma-house").available).toBe(true);
-    expect(isLocationAvailable(night, "shrine").available).toBe(false);
-  });
-
-  it("ends the day at 20:00 and preserves the collection into the next day", () => {
-    const state = stateAt({ timeMinutes: 1185, phase: "evening", locationId: "backyard" });
-    const ended = gameReducer(state, { type: "REST", minutes: 30 });
-    expect(ended.timeMinutes).toBe(1200);
-    expect(ended.phase).toBe("day-ended");
-
-    const next = gameReducer(ended, { type: "START_NEXT_DAY" });
-    expect(next.day).toBe(2);
-    expect(next.timeMinutes).toBe(360);
-    expect(next.locationId).toBe("grandma-house");
-  });
-
-  it("unlocks the secret route after the shrine keeper's third conversation", () => {
-    let state = stateAt({
-      timeMinutes: 360,
-      locationId: "shrine",
-      field: playerFieldAt("shrine", 690, 470),
-    });
-    state = gameReducer(state, { type: "TALK", npcId: "shrine-keeper" });
-    state = gameReducer(state, { type: "ACKNOWLEDGE_OUTCOME" });
-    state = gameReducer(state, { type: "TALK", npcId: "shrine-keeper" });
-    state = gameReducer(state, { type: "ACKNOWLEDGE_OUTCOME" });
-    state = gameReducer(state, { type: "TALK", npcId: "shrine-keeper" });
-
-    expect(state.npcTalkCounts["shrine-keeper"]).toBe(3);
-    expect(state.flags.secretRouteUnlocked).toBe(true);
-
-    const atFour = { ...state, timeMinutes: 960, pendingOutcome: undefined };
-    const beforeFour = { ...state, timeMinutes: 959, pendingOutcome: undefined };
-    expect(isLocationAvailable(atFour, "secret-forest").available).toBe(true);
-    expect(isLocationAvailable(beforeFour, "secret-forest").available).toBe(false);
-  });
-
-  it("keeps a non-zero daytime rate for the giant stag", () => {
-    const giantStag = insects.find((insect) => insect.id === "giant-stag");
-    const daytimeRule = giantStag?.appearances.find((rule) => rule.periods.includes("day"));
-    expect(daytimeRule?.chance).toBe(0.005);
-  });
-
-  it("refreshes the encounter period when time crosses a period boundary", () => {
-    const morning = stateAt({
+  it("uses a new session after the time period changes", () => {
+    let state = atTree("backyard-tree-1", {
       timeMinutes: 585,
-      locationId: "backyard",
-      visitCounters: { backyard: 1 },
       exploration: {
         locationId: "backyard",
         visitIndex: 1,
         period: "morning",
-        focusedSpotId: "backyard-tree-1",
-        searchedSpotIds: ["backyard-tree-1"],
-      },
-    });
-    const daytime = gameReducer(morning, { type: "REST", minutes: 30 });
-    expect(daytime.exploration?.period).toBe("day");
-    expect(daytime.exploration?.focusedSpotId).toBeUndefined();
-    expect(daytime.exploration?.searchedSpotIds).toEqual([]);
-
-    const lateHome = stateAt({ timeMinutes: 1065, locationId: "grandma-house" });
-    const nightBackyard = gameReducer(lateHome, { type: "MOVE", locationId: "backyard" });
-    expect(nightBackyard.phase).toBe("evening");
-    expect(nightBackyard.timeMinutes).toBe(1080);
-    expect(nightBackyard.exploration?.period).toBe("night");
-  });
-
-  it("uses the current night period even if an old exploration snapshot is stale", () => {
-    const lightTrap = locationById.backyard.hotspots.find((spot) => spot.id === "backyard-light")!;
-    let foundAtlas = false;
-    for (let index = 0; index < 2_000 && !foundAtlas; index += 1) {
-      const stale = stateAt({
-        worldSeed: `night-${index}`,
-        timeMinutes: 1095,
-        phase: "evening",
-        locationId: "backyard",
-        visitCounters: { backyard: 1 },
-        exploration: {
-          locationId: "backyard",
-          visitIndex: 1,
-          period: "morning",
-          searchedSpotIds: [],
-        },
-      });
-      foundAtlas = rollEncounter(stale, lightTrap)?.insectId === "atlas-beetle";
-    }
-    expect(foundAtlas).toBe(true);
-  });
-
-  it("repeats an encounter for the same seed and saved visit", () => {
-    const state = stateAt({
-      worldSeed: "repeatable",
-      timeMinutes: 600,
-      locationId: "oak-forest",
-      visitCounters: { "oak-forest": 3 },
-      exploration: {
-        locationId: "oak-forest",
-        visitIndex: 3,
-        period: "day",
         searchedSpotIds: [],
       },
     });
-    const spot = locationById["oak-forest"].hotspots[0];
-    expect(rollEncounter(state, spot)).toEqual(rollEncounter(structuredClone(state), spot));
+    const morningId = getInspectionSessionId(state, treeById["backyard-tree-1"]);
+    state = gameReducer(state, { type: "OPEN_TREE_INSPECTION", treeId: "backyard-tree-1" });
+    state = gameReducer(state, { type: "CLOSE_TREE_INSPECTION" });
+    expect(state.timeMinutes).toBe(600);
+    const dayId = getInspectionSessionId(state, treeById["backyard-tree-1"]);
+    expect(dayId).not.toBe(morningId);
+    state = gameReducer(state, { type: "OPEN_TREE_INSPECTION", treeId: "backyard-tree-1" });
+    expect(state.activeInspectionSessionId).toBe(dayId);
+    expect(state.timeMinutes).toBe(615);
   });
 
-  it("never lets an appearance boost alter specimen size", () => {
-    const spot = locationById["oak-forest"].hotspots[0];
-    let matchingPair: [ReturnType<typeof rollEncounter>, ReturnType<typeof rollEncounter>] | null = null;
-
-    for (let index = 0; index < 10_000 && !matchingPair; index += 1) {
-      const base = stateAt({
-        worldSeed: `size-${index}`,
-        timeMinutes: 600,
-        locationId: "oak-forest",
-        visitCounters: { "oak-forest": 1 },
-        exploration: {
-          locationId: "oak-forest",
-          visitIndex: 1,
-          period: "day",
-          searchedSpotIds: [],
-        },
-      });
-      const normal = rollEncounter(base, spot);
-      const boosted = rollEncounter(
-        { ...base, buffs: { ...base.buffs, appearanceBoostUntil: 720 } },
-        spot,
-      );
-      if (normal && boosted && normal.insectId === boosted.insectId) matchingPair = [normal, boosted];
+  it("unlocks the secret route after the shrine keeper's third conversation", () => {
+    let state = stateAt({
+      locationId: "shrine",
+      field: playerFieldAt("shrine", 690, 470),
+    });
+    for (let index = 0; index < 3; index += 1) {
+      state = gameReducer(state, { type: "TALK", npcId: "shrine-keeper" });
+      if (index < 2) state = gameReducer(state, { type: "ACKNOWLEDGE_OUTCOME" });
     }
-
-    expect(matchingPair).not.toBeNull();
-    expect(matchingPair?.[0]?.sizeMm).toBe(matchingPair?.[1]?.sizeMm);
+    expect(state.flags.secretRouteUnlocked).toBe(true);
+    const atFour = { ...state, timeMinutes: 960, pendingOutcome: undefined };
+    expect(isLocationAvailable(atFour, "secret-forest").available).toBe(true);
   });
 
-  it("makes boosted encounters a superset of normal encounters", () => {
-    const spot = locationById["oak-forest"].hotspots[0];
-    let sawBoostOnlyEncounter = false;
-    for (let index = 0; index < 2_000; index += 1) {
-      const base = stateAt({
-        worldSeed: `monotonic-${index}`,
-        timeMinutes: 600,
-        locationId: "oak-forest",
-        visitCounters: { "oak-forest": 1 },
-        exploration: {
-          locationId: "oak-forest",
-          visitIndex: 1,
-          period: "day",
-          searchedSpotIds: [],
-        },
-      });
-      const normal = rollEncounter(base, spot);
-      const boosted = rollEncounter(
-        { ...base, buffs: { ...base.buffs, appearanceBoostUntil: 720 } },
-        spot,
-      );
-      if (normal) {
-        expect(boosted).not.toBeNull();
-        expect(boosted?.insectId).toBe(normal.insectId);
-        expect(boosted?.sizeMm).toBe(normal.sizeMm);
-        expect(boosted?.boostAssisted).toBe(false);
-      } else if (boosted) {
-        sawBoostOnlyEncounter = true;
-        expect(boosted.boostAssisted).toBe(true);
-      }
+  it("closes remote loop exits after 18:00 but keeps the backyard edge open", () => {
+    const evening = stateAt({ timeMinutes: 1095, phase: "evening" });
+    const field = fieldById["grandma-house"];
+    expect(isFieldExitAvailable(evening, field.exits.find((exit) => exit.id === "to-paddy")!).available).toBe(false);
+    expect(isFieldExitAvailable(evening, field.exits.find((exit) => exit.id === "to-forest")!).available).toBe(false);
+    expect(isFieldExitAvailable(evening, field.exits.find((exit) => exit.id === "to-backyard")!).available).toBe(true);
+  });
+
+  it("keeps a non-zero daytime rate for the giant stag", () => {
+    const giantStag = insects.find((insect) => insect.id === "giant-stag");
+    expect(giantStag?.appearances.find((rule) => rule.periods.includes("day"))?.chance).toBe(0.005);
+  });
+
+  it("repeats an encounter for the same seed and visit", () => {
+    const state = atTree("oak-tree-1", { worldSeed: "repeatable", timeMinutes: 600 });
+    const hotspot = { id: "oak-tree-1", label: "木1", kind: "tree" as const, x: 0, y: 0 };
+    expect(rollEncounter(state, hotspot)).toEqual(rollEncounter(structuredClone(state), hotspot));
+  });
+
+  it("never lets an appearance boost alter an existing encounter's species or size", () => {
+    const hotspot = { id: "oak-tree-1", label: "木1", kind: "tree" as const, x: 0, y: 0 };
+    let pair: [ReturnType<typeof rollEncounter>, ReturnType<typeof rollEncounter>] | null = null;
+    for (let index = 0; index < 10000 && !pair; index += 1) {
+      const base = atTree("oak-tree-1", { worldSeed: `size-${index}`, timeMinutes: 600 });
+      const normal = rollEncounter(base, hotspot);
+      const boosted = rollEncounter({ ...base, buffs: { ...base.buffs, appearanceBoostUntil: 720 } }, hotspot);
+      if (normal && boosted) pair = [normal, boosted];
     }
-    expect(sawBoostOnlyEncounter).toBe(true);
+    expect(pair).not.toBeNull();
+    expect(pair?.[0]?.insectId).toBe(pair?.[1]?.insectId);
+    expect(pair?.[0]?.sizeMm).toBe(pair?.[1]?.sizeMm);
+    expect(pair?.[1]?.boostAssisted).toBe(false);
   });
 
-  it("blocks all gameplay commands until the current outcome is acknowledged", () => {
-    const state = stateAt({
-      locationId: "shrine",
-      pendingOutcome: { type: "notice", title: "確認", text: "結果表示中" },
-    });
-    const attemptedTalk = gameReducer(state, { type: "TALK", npcId: "shrine-keeper" });
-    expect(attemptedTalk).toBe(state);
-    expect(attemptedTalk.timeMinutes).toBe(360);
-    expect(attemptedTalk.npcTalkCounts["shrine-keeper"]).toBeUndefined();
+  it("blocks unrelated gameplay commands while a close-up is active", () => {
+    let state = atTree("mixed-tree-1", { timeMinutes: 600 });
+    state = gameReducer(state, { type: "OPEN_TREE_INSPECTION", treeId: "mixed-tree-1" });
+    expect(gameReducer(state, { type: "REST", minutes: 30 })).toBe(state);
+    expect(gameReducer(state, { type: "TALK", npcId: "professor" })).toBe(state);
   });
 
-  it("does not offer a secret-forest trip that would arrive at 18:00", () => {
-    const unlocked = stateAt({
-      timeMinutes: 1065,
-      locationId: "shrine",
-      flags: {
-        secretRouteUnlocked: true,
-        pickupCompletedDay: 0,
-        extraHintDay: 0,
-        fieldTutorialSeen: true,
-      },
-    });
-    expect(isLocationAvailable(unlocked, "secret-forest").available).toBe(false);
-  });
-
-  it("starts pickup when time reaches 18:00 on a road field", () => {
-    const road = stateAt({
-      timeMinutes: 1065,
-      locationId: "shrine",
-      field: playerFieldAt("forest-road", 880, 550),
-    });
-    const pickup = gameReducer(road, { type: "REST", minutes: 30 });
-    expect(pickup.phase).toBe("pickup");
-    expect(pickup.timeMinutes).toBe(1080);
-    expect(pickup.field.fieldId).toBe("forest-road");
-  });
-
-  it("closes the road after 18:00 but keeps the backyard available", () => {
-    const evening = stateAt({
-      timeMinutes: 1095,
-      phase: "evening",
-      field: playerFieldAt("grandma-house", 590, 105),
-    });
-    const blocked = gameReducer(evening, { type: "TRAVEL_EXIT", exitId: "to-paddy" });
-    expect(blocked.field.fieldId).toBe("grandma-house");
-    expect(blocked.pendingOutcome?.type).toBe("notice");
-
-    const acknowledged = gameReducer(blocked, { type: "ACKNOWLEDGE_OUTCOME" });
-    const atBackyardExit = {
-      ...acknowledged,
-      field: playerFieldAt("grandma-house", 125, 700),
-    };
-    const backyard = gameReducer(atBackyardExit, { type: "TRAVEL_EXIT", exitId: "to-backyard" });
-    expect(backyard.field.fieldId).toBe("backyard");
-    expect(backyard.phase).toBe("evening");
-  });
-
-  it("lets a 17:55 trip from the house reach the backyard at 18:00", () => {
-    const atExit = stateAt({
-      timeMinutes: 1075,
-      field: playerFieldAt("grandma-house", 125, 700),
-    });
-    const backyard = gameReducer(atExit, { type: "TRAVEL_EXIT", exitId: "to-backyard" });
-    expect(backyard.field.fieldId).toBe("backyard");
-    expect(backyard.timeMinutes).toBe(1080);
-    expect(backyard.phase).toBe("evening");
-  });
-
-  it("opens the secret path only after the clue and from 16:00", () => {
-    const atEntrance = stateAt({
-      timeMinutes: 960,
-      locationId: "shrine",
-      field: playerFieldAt("shrine", 90, 430),
-    });
-    const locked = gameReducer(atEntrance, { type: "TRAVEL_EXIT", exitId: "to-secret" });
-    expect(locked.field.fieldId).toBe("shrine");
-
-    const unlocked = {
-      ...atEntrance,
-      flags: { ...atEntrance.flags, secretRouteUnlocked: true },
-    };
-    const path = gameReducer(unlocked, { type: "TRAVEL_EXIT", exitId: "to-secret" });
-    expect(path.field.fieldId).toBe("secret-path");
-    expect(path.timeMinutes).toBe(965);
+  it("ends the day and preserves the collection into the next day", () => {
+    const state = stateAt({ timeMinutes: 1185, phase: "evening", locationId: "backyard", field: playerFieldAt("backyard") });
+    const ended = gameReducer(state, { type: "REST", minutes: 30 });
+    const next = gameReducer(ended, { type: "START_NEXT_DAY" });
+    expect(ended.phase).toBe("day-ended");
+    expect(next.day).toBe(2);
+    expect(next.timeMinutes).toBe(360);
+    expect(next.inspectionSessions).toEqual({});
   });
 });

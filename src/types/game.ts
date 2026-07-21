@@ -19,6 +19,20 @@ export type FacingDirection = "up" | "down" | "left" | "right";
 export type TimePeriod = "morning" | "day" | "evening" | "night";
 export type GamePhase = "day" | "pickup" | "evening" | "day-ended";
 export type SpotKind = "tree" | "sap" | "banana-trap" | "light-trap";
+export type InspectionSceneKind =
+  | "sap"
+  | "bark-crack"
+  | "root"
+  | "banana-trap"
+  | "light-trap";
+export type AmbientInsectId =
+  | "green-bottle"
+  | "black-bottle"
+  | "butterfly"
+  | "moth"
+  | "ant"
+  | "gnat"
+  | "pillbug";
 export type InsectId =
   | "japanese-rhino"
   | "saw-stag"
@@ -94,6 +108,8 @@ export interface Specimen {
   caughtAtMinutes: number;
   locationId: LocationId;
   spotId: string;
+  treeId?: string;
+  inspectionPointId?: string;
   rankingEligible: boolean;
 }
 
@@ -113,11 +129,79 @@ export interface PlayerFieldState {
   lastSafeX: number;
   lastSafeY: number;
   discoveredFieldIds: FieldId[];
+  lastTransitionToken?: string;
+}
+
+export interface TreeInspectionPoint {
+  id: string;
+  label: string;
+  sceneKind: InspectionSceneKind;
+  unlockAfterPointId?: string;
+  activePeriods?: TimePeriod[];
+  encounterWeightTags: string[];
+}
+
+export interface TreeDefinition {
+  id: string;
+  legacySpotId: string;
+  fieldId: FieldId;
+  label: string;
+  species: "kunugi" | "konara" | "other";
+  x: number;
+  y: number;
+  primaryPointId: string;
+  inspectionPoints: TreeInspectionPoint[];
+  clueProfileId: string;
+  encounterKind: SpotKind;
+  trapKind?: "banana" | "light";
+}
+
+export interface AmbientPlacement {
+  id: string;
+  insectId: AmbientInsectId;
+  x: number;
+  y: number;
+  motion: "still" | "crawl" | "flutter";
+}
+
+export interface TreeInspectionSession {
+  id: string;
+  treeId: string;
+  committed: boolean;
+  day: number;
+  visitIndex: number;
+  period: TimePeriod;
+  startedAtMinutes: number;
+  resolvedAtMinutes: number;
+  currentPointId: string;
+  examinedPointIds: string[];
+  catchableEncounter?: {
+    id: string;
+    pointId: string;
+    insectId: InsectId;
+    sizeMm: number;
+    rankingEligible: boolean;
+    caught: boolean;
+    x: number;
+    y: number;
+  };
+  ambientByPointId: Record<string, AmbientPlacement[]>;
+  clueVisible: boolean;
+  returnPosition: {
+    x: number;
+    y: number;
+    facing: FacingDirection;
+  };
+}
+
+export interface TrapState {
+  kind: "banana" | "light";
+  installed: boolean;
 }
 
 export type Outcome =
   | { type: "empty"; spotId: string; text: string }
-  | { type: "caught"; specimen: Specimen; isPersonalBest: boolean }
+  | { type: "caught"; specimen: Specimen; isPersonalBest: boolean; isFirstCatch?: boolean }
   | { type: "dialogue"; npcId: NpcId; text: string; unlockedSecretRoute: boolean }
   | { type: "notice"; title: string; text: string };
 
@@ -134,8 +218,8 @@ export interface GameBuffs {
 }
 
 export interface GameState {
-  schemaVersion: 2;
-  contentVersion: 2;
+  schemaVersion: 3;
+  contentVersion: 3;
   rngVersion: 1;
   worldSeed: string;
   revision: number;
@@ -151,17 +235,38 @@ export interface GameState {
   metNpcIds: NpcId[];
   flags: GameFlags;
   buffs: GameBuffs;
+  inspectionSessions: Record<string, TreeInspectionSession>;
+  activeInspectionSessionId?: string;
+  discoveredClueSessionIds: string[];
+  caughtEncounterIds: string[];
+  trapStates: Record<string, TrapState>;
+  pendingBoundaryEvent?: "pickup" | "day-ended";
   pendingOutcome?: Outcome;
 }
 
 export type AdRewardKind = "appearance" | "duration" | "hint";
 
 export type GameCommand =
-  | { type: "MOVE"; locationId: LocationId }
-  | { type: "FOCUS_SPOT"; spotId: string }
-  | { type: "INSPECT_SPOT"; spotId?: string }
+  | { type: "OPEN_TREE_INSPECTION"; treeId: string }
+  | { type: "VIEW_INSPECTION_POINT"; pointId: string }
+  | { type: "CATCH_INSPECTION_ENCOUNTER"; encounterId: string }
+  | { type: "CLOSE_TREE_INSPECTION" }
+  | {
+      type: "DISCOVER_TREE_CLUE";
+      treeId: string;
+      x: number;
+      y: number;
+      facing: FacingDirection;
+    }
   | { type: "TALK"; npcId: NpcId }
-  | { type: "TRAVEL_EXIT"; exitId: string }
+  | {
+      type: "TRAVEL_EDGE";
+      exitId: string;
+      x: number;
+      y: number;
+      facing: FacingDirection;
+      transitionToken: string;
+    }
   | {
       type: "SYNC_PLAYER_POSITION";
       x: number;

@@ -31,16 +31,19 @@ export interface FieldSpawnPoint {
   facing: FacingDirection;
 }
 
-export interface FieldExit {
+export interface EdgeExit {
   id: string;
   label: string;
-  x: number;
-  y: number;
+  side: "top" | "right" | "bottom" | "left";
+  rangeStart: number;
+  rangeEnd: number;
   toFieldId: FieldId;
   toSpawnId: string;
   travelMinutes: number;
   requiresSecretRoute?: boolean;
 }
+
+export type FieldExit = EdgeExit;
 
 export interface FieldObject {
   id: string;
@@ -81,7 +84,7 @@ export interface FieldDefinition {
   height: number;
   defaultSpawnId: string;
   spawnPoints: FieldSpawnPoint[];
-  exits: FieldExit[];
+  exits: EdgeExit[];
   objects: FieldObject[];
   hotspots: PositionedHotspot[];
   npcPositions: NpcPosition[];
@@ -108,15 +111,17 @@ export const fields: FieldDefinition[] = [
     defaultSpawnId: "start",
     spawnPoints: [
       spawn("start", 570, 710, "up"),
-      spawn("from-paddy", 590, 210, "down"),
-      spawn("from-backyard", 260, 700, "right"),
+      spawn("from-paddy", 1128, 700, "left"),
+      spawn("from-backyard", 72, 700, "right"),
+      spawn("from-forest", 560, 72, "down"),
     ],
     exits: [
       {
         id: "to-paddy",
         label: "田んぼ道へ",
-        x: 590,
-        y: 105,
+        side: "right",
+        rangeStart: 620,
+        rangeEnd: 780,
         toFieldId: "paddy-road",
         toSpawnId: "from-house",
         travelMinutes: 5,
@@ -124,9 +129,20 @@ export const fields: FieldDefinition[] = [
       {
         id: "to-backyard",
         label: "裏庭へ",
-        x: 125,
-        y: 700,
+        side: "left",
+        rangeStart: 620,
+        rangeEnd: 780,
         toFieldId: "backyard",
+        toSpawnId: "from-house",
+        travelMinutes: 5,
+      },
+      {
+        id: "to-forest",
+        label: "林道へ",
+        side: "top",
+        rangeStart: 480,
+        rangeEnd: 640,
+        toFieldId: "forest-road",
         toSpawnId: "from-house",
         travelMinutes: 5,
       },
@@ -135,7 +151,8 @@ export const fields: FieldDefinition[] = [
       { id: "house", kind: "house", x: 730, y: 280, width: 390, height: 330, solid: true, label: "家" },
       { id: "shed", kind: "shed", x: 120, y: 180, width: 220, height: 170, solid: true },
       { id: "fence-left", kind: "fence", x: 0, y: 0, width: 60, height: 600, solid: true },
-      { id: "fence-right", kind: "fence", x: 1140, y: 0, width: 60, height: 1000, solid: true },
+      { id: "fence-right-top", kind: "fence", x: 1140, y: 0, width: 60, height: 590, solid: true },
+      { id: "fence-right-bottom", kind: "fence", x: 1140, y: 810, width: 60, height: 190, solid: true },
       { id: "flowers", kind: "flower", x: 780, y: 650, width: 260, height: 70 },
     ],
     hotspots: [],
@@ -151,13 +168,14 @@ export const fields: FieldDefinition[] = [
     width: 1100,
     height: 1050,
     defaultSpawnId: "from-house",
-    spawnPoints: [spawn("from-house", 900, 870, "left")],
+    spawnPoints: [spawn("from-house", 1028, 870, "left")],
     exits: [
       {
         id: "to-house",
         label: "家へ戻る",
-        x: 1010,
-        y: 870,
+        side: "right",
+        rangeStart: 790,
+        rangeEnd: 940,
         toFieldId: "grandma-house",
         toSpawnId: "from-backyard",
         travelMinutes: 5,
@@ -187,15 +205,16 @@ export const fields: FieldDefinition[] = [
     height: 1600,
     defaultSpawnId: "from-house",
     spawnPoints: [
-      spawn("from-house", 450, 1430, "up"),
-      spawn("from-shrine", 450, 170, "down"),
+      spawn("from-house", 72, 800, "right"),
+      spawn("from-shrine", 828, 800, "left"),
     ],
     exits: [
       {
         id: "to-house",
         label: "おばあちゃんの家へ",
-        x: 450,
-        y: 1510,
+        side: "left",
+        rangeStart: 720,
+        rangeEnd: 880,
         toFieldId: "grandma-house",
         toSpawnId: "from-paddy",
         travelMinutes: 5,
@@ -203,20 +222,21 @@ export const fields: FieldDefinition[] = [
       {
         id: "to-shrine",
         label: "神社へ",
-        x: 450,
-        y: 90,
+        side: "right",
+        rangeStart: 720,
+        rangeEnd: 880,
         toFieldId: "shrine",
         toSpawnId: "from-paddy",
         travelMinutes: 5,
       },
     ],
     objects: [
-      { id: "water-left", kind: "water", x: 250, y: 0, width: 55, height: 1600, solid: true },
-      { id: "water-right", kind: "water", x: 595, y: 0, width: 55, height: 1600, solid: true },
-      { id: "paddy-left", kind: "paddy", x: 0, y: 0, width: 250, height: 1600, solid: true },
-      { id: "paddy-right", kind: "paddy", x: 650, y: 0, width: 250, height: 1600, solid: true },
-      { id: "stone-one", kind: "stone", x: 325, y: 930, width: 50, height: 35, solid: true },
-      { id: "stone-two", kind: "stone", x: 530, y: 510, width: 55, height: 38, solid: true },
+      { id: "paddy-top", kind: "paddy", x: 0, y: 0, width: 900, height: 650, solid: true },
+      { id: "water-top", kind: "water", x: 0, y: 650, width: 900, height: 50, solid: true },
+      { id: "water-bottom", kind: "water", x: 0, y: 900, width: 900, height: 50, solid: true },
+      { id: "paddy-bottom", kind: "paddy", x: 0, y: 950, width: 900, height: 650, solid: true },
+      { id: "stone-one", kind: "stone", x: 330, y: 760, width: 50, height: 35, solid: true },
+      { id: "stone-two", kind: "stone", x: 560, y: 825, width: 55, height: 38, solid: true },
     ],
     hotspots: [],
     npcPositions: [],
@@ -231,34 +251,37 @@ export const fields: FieldDefinition[] = [
     height: 1100,
     defaultSpawnId: "from-paddy",
     spawnPoints: [
-      spawn("from-paddy", 650, 970, "up"),
-      spawn("from-forest", 1120, 570, "left"),
-      spawn("from-secret", 190, 430, "right"),
+      spawn("from-paddy", 72, 850, "right"),
+      spawn("from-bamboo", 1000, 72, "down"),
+      spawn("from-secret", 1228, 430, "left"),
     ],
     exits: [
       {
         id: "to-paddy",
         label: "田んぼ道へ",
-        x: 650,
-        y: 1020,
+        side: "left",
+        rangeStart: 770,
+        rangeEnd: 930,
         toFieldId: "paddy-road",
         toSpawnId: "from-shrine",
         travelMinutes: 5,
       },
       {
-        id: "to-forest",
-        label: "林道へ",
-        x: 1210,
-        y: 570,
-        toFieldId: "forest-road",
+        id: "to-bamboo",
+        label: "竹林へ",
+        side: "top",
+        rangeStart: 920,
+        rangeEnd: 1080,
+        toFieldId: "bamboo-grove",
         toSpawnId: "from-shrine",
         travelMinutes: 5,
       },
       {
         id: "to-secret",
         label: "草むらの奥へ",
-        x: 90,
-        y: 430,
+        side: "right",
+        rangeStart: 350,
+        rangeEnd: 510,
         toFieldId: "secret-path",
         toSpawnId: "from-shrine",
         travelMinutes: 5,
@@ -269,7 +292,7 @@ export const fields: FieldDefinition[] = [
       { id: "main-shrine", kind: "shrine", x: 475, y: 70, width: 350, height: 230, solid: true },
       { id: "torii", kind: "torii", x: 570, y: 760, width: 160, height: 55, solid: true },
       { id: "stone-wall-left", kind: "stone", x: 0, y: 0, width: 55, height: 330, solid: true },
-      { id: "stone-wall-right", kind: "stone", x: 1245, y: 0, width: 55, height: 400, solid: true },
+      { id: "stone-wall-right", kind: "stone", x: 1245, y: 0, width: 55, height: 330, solid: true },
     ],
     hotspots: [
       { spotId: "shrine-tree-1", x: 240, y: 280 },
@@ -283,31 +306,24 @@ export const fields: FieldDefinition[] = [
   {
     id: "forest-road",
     name: "林道",
-    description: "木漏れ日の分かれ道。看板を見て行き先を決めよう。",
+    description: "雑木林から家へ戻る、木漏れ日の周回路。",
     theme: "forest",
     width: 1800,
     height: 1100,
-    defaultSpawnId: "from-shrine",
+    defaultSpawnId: "from-mixed",
     spawnPoints: [
-      spawn("from-shrine", 150, 550, "right"),
-      spawn("from-mixed", 470, 210, "down"),
-      spawn("from-oak", 880, 210, "down"),
-      spawn("from-bamboo", 1280, 890, "up"),
-      spawn("from-school", 1650, 550, "left"),
+      spawn("from-mixed", 900, 72, "down"),
+      spawn("from-house", 900, 1028, "up"),
     ],
     exits: [
-      { id: "to-shrine", label: "神社へ", x: 70, y: 550, toFieldId: "shrine", toSpawnId: "from-forest", travelMinutes: 5 },
-      { id: "to-mixed", label: "雑木林へ", x: 470, y: 95, toFieldId: "mixed-forest", toSpawnId: "from-road", travelMinutes: 5 },
-      { id: "to-oak", label: "クヌギ林へ", x: 880, y: 95, toFieldId: "oak-forest", toSpawnId: "from-road", travelMinutes: 5 },
-      { id: "to-bamboo", label: "竹林へ", x: 1280, y: 1010, toFieldId: "bamboo-grove", toSpawnId: "from-road", travelMinutes: 5 },
-      { id: "to-school", label: "小学校へ", x: 1730, y: 550, toFieldId: "school", toSpawnId: "from-road", travelMinutes: 5 },
+      { id: "to-mixed", label: "雑木林へ", side: "top", rangeStart: 820, rangeEnd: 980, toFieldId: "mixed-forest", toSpawnId: "from-road", travelMinutes: 5 },
+      { id: "to-house", label: "おばあちゃんの家へ", side: "bottom", rangeStart: 820, rangeEnd: 980, toFieldId: "grandma-house", toSpawnId: "from-forest", travelMinutes: 5 },
     ],
     objects: [
-      { id: "north-bush-one", kind: "bush", x: 0, y: 0, width: 370, height: 360, solid: true },
-      { id: "north-bush-two", kind: "bush", x: 570, y: 0, width: 210, height: 340, solid: true },
-      { id: "north-bush-three", kind: "bush", x: 980, y: 0, width: 820, height: 350, solid: true },
-      { id: "south-bush-one", kind: "bush", x: 0, y: 760, width: 1080, height: 340, solid: true },
-      { id: "south-bush-two", kind: "bush", x: 1430, y: 760, width: 370, height: 340, solid: true },
+      { id: "north-bush-one", kind: "bush", x: 0, y: 0, width: 790, height: 330, solid: true },
+      { id: "north-bush-two", kind: "bush", x: 1010, y: 0, width: 790, height: 330, solid: true },
+      { id: "south-bush-one", kind: "bush", x: 0, y: 790, width: 790, height: 310, solid: true },
+      { id: "south-bush-two", kind: "bush", x: 1010, y: 790, width: 790, height: 310, solid: true },
       { id: "road-stone", kind: "stone", x: 1050, y: 560, width: 58, height: 40, solid: true },
     ],
     hotspots: [],
@@ -322,11 +338,18 @@ export const fields: FieldDefinition[] = [
     width: 1150,
     height: 1050,
     defaultSpawnId: "from-road",
-    spawnPoints: [spawn("from-road", 575, 920, "up")],
-    exits: [{ id: "to-road", label: "林道へ", x: 575, y: 990, toFieldId: "forest-road", toSpawnId: "from-mixed", travelMinutes: 5 }],
+    spawnPoints: [
+      spawn("from-oak", 1078, 300, "left"),
+      spawn("from-road", 575, 978, "up"),
+    ],
+    exits: [
+      { id: "to-oak", label: "クヌギ林へ", side: "right", rangeStart: 220, rangeEnd: 380, toFieldId: "oak-forest", toSpawnId: "from-mixed", travelMinutes: 5 },
+      { id: "to-road", label: "林道へ", side: "bottom", rangeStart: 495, rangeEnd: 655, toFieldId: "forest-road", toSpawnId: "from-mixed", travelMinutes: 5 },
+    ],
     objects: [
       { id: "bush-left", kind: "bush", x: 0, y: 0, width: 80, height: 1050, solid: true },
-      { id: "bush-right", kind: "bush", x: 1070, y: 0, width: 80, height: 1050, solid: true },
+      { id: "bush-right-top", kind: "bush", x: 1070, y: 0, width: 80, height: 190, solid: true },
+      { id: "bush-right-bottom", kind: "bush", x: 1070, y: 410, width: 80, height: 640, solid: true },
       { id: "fallen", kind: "bush", x: 460, y: 520, width: 230, height: 90, solid: true },
     ],
     hotspots: [
@@ -346,13 +369,21 @@ export const fields: FieldDefinition[] = [
     locationId: "oak-forest",
     width: 1200,
     height: 1100,
-    defaultSpawnId: "from-road",
-    spawnPoints: [spawn("from-road", 600, 960, "up")],
-    exits: [{ id: "to-road", label: "林道へ", x: 600, y: 1030, toFieldId: "forest-road", toSpawnId: "from-oak", travelMinutes: 5 }],
+    defaultSpawnId: "from-school",
+    spawnPoints: [
+      spawn("from-school", 1128, 800, "left"),
+      spawn("from-mixed", 72, 300, "right"),
+    ],
+    exits: [
+      { id: "to-school", label: "小学校へ", side: "right", rangeStart: 720, rangeEnd: 880, toFieldId: "school", toSpawnId: "from-oak", travelMinutes: 5 },
+      { id: "to-mixed", label: "雑木林へ", side: "left", rangeStart: 220, rangeEnd: 380, toFieldId: "mixed-forest", toSpawnId: "from-oak", travelMinutes: 5 },
+    ],
     objects: [
       { id: "bush-top", kind: "bush", x: 0, y: 0, width: 1200, height: 70, solid: true },
-      { id: "bush-left", kind: "bush", x: 0, y: 0, width: 70, height: 1100, solid: true },
-      { id: "bush-right", kind: "bush", x: 1130, y: 0, width: 70, height: 1100, solid: true },
+      { id: "bush-left-top", kind: "bush", x: 0, y: 0, width: 70, height: 190, solid: true },
+      { id: "bush-left-bottom", kind: "bush", x: 0, y: 410, width: 70, height: 690, solid: true },
+      { id: "bush-right-top", kind: "bush", x: 1130, y: 0, width: 70, height: 690, solid: true },
+      { id: "bush-right-bottom", kind: "bush", x: 1130, y: 910, width: 70, height: 190, solid: true },
       { id: "stone", kind: "stone", x: 540, y: 600, width: 110, height: 60, solid: true },
     ],
     hotspots: [
@@ -372,9 +403,15 @@ export const fields: FieldDefinition[] = [
     locationId: "bamboo-grove",
     width: 1050,
     height: 1250,
-    defaultSpawnId: "from-road",
-    spawnPoints: [spawn("from-road", 525, 180, "down")],
-    exits: [{ id: "to-road", label: "林道へ", x: 525, y: 80, toFieldId: "forest-road", toSpawnId: "from-bamboo", travelMinutes: 5 }],
+    defaultSpawnId: "from-shrine",
+    spawnPoints: [
+      spawn("from-shrine", 525, 1178, "up"),
+      spawn("from-school", 525, 72, "down"),
+    ],
+    exits: [
+      { id: "to-shrine", label: "神社へ", side: "bottom", rangeStart: 445, rangeEnd: 605, toFieldId: "shrine", toSpawnId: "from-bamboo", travelMinutes: 5 },
+      { id: "to-school", label: "小学校へ", side: "top", rangeStart: 445, rangeEnd: 605, toFieldId: "school", toSpawnId: "from-bamboo", travelMinutes: 5 },
+    ],
     objects: [
       { id: "bamboo-left", kind: "bamboo", x: 0, y: 0, width: 180, height: 1250, solid: true },
       { id: "bamboo-right", kind: "bamboo", x: 870, y: 0, width: 180, height: 1250, solid: true },
@@ -397,9 +434,15 @@ export const fields: FieldDefinition[] = [
     locationId: "school",
     width: 1400,
     height: 1050,
-    defaultSpawnId: "from-road",
-    spawnPoints: [spawn("from-road", 180, 550, "right")],
-    exits: [{ id: "to-road", label: "林道へ", x: 80, y: 550, toFieldId: "forest-road", toSpawnId: "from-school", travelMinutes: 5 }],
+    defaultSpawnId: "from-bamboo",
+    spawnPoints: [
+      spawn("from-bamboo", 1200, 978, "up"),
+      spawn("from-oak", 72, 520, "right"),
+    ],
+    exits: [
+      { id: "to-bamboo", label: "竹林へ", side: "bottom", rangeStart: 1120, rangeEnd: 1280, toFieldId: "bamboo-grove", toSpawnId: "from-school", travelMinutes: 5 },
+      { id: "to-oak", label: "クヌギ林へ", side: "left", rangeStart: 440, rangeEnd: 600, toFieldId: "oak-forest", toSpawnId: "from-school", travelMinutes: 5 },
+    ],
     objects: [
       { id: "school-building", kind: "school", x: 760, y: 80, width: 560, height: 280, solid: true, label: "校舎" },
       { id: "pool", kind: "water", x: 980, y: 650, width: 300, height: 190, solid: true },
@@ -426,12 +469,12 @@ export const fields: FieldDefinition[] = [
     height: 1500,
     defaultSpawnId: "from-shrine",
     spawnPoints: [
-      spawn("from-shrine", 400, 1350, "up"),
-      spawn("from-secret", 400, 160, "down"),
+      spawn("from-shrine", 400, 1428, "up"),
+      spawn("from-secret", 400, 72, "down"),
     ],
     exits: [
-      { id: "to-shrine", label: "神社へ戻る", x: 400, y: 1420, toFieldId: "shrine", toSpawnId: "from-secret", travelMinutes: 5 },
-      { id: "to-secret", label: "秘密の森へ", x: 400, y: 80, toFieldId: "secret-forest", toSpawnId: "from-path", travelMinutes: 5, requiresSecretRoute: true },
+      { id: "to-shrine", label: "神社へ戻る", side: "bottom", rangeStart: 320, rangeEnd: 480, toFieldId: "shrine", toSpawnId: "from-secret", travelMinutes: 5 },
+      { id: "to-secret", label: "秘密の森へ", side: "top", rangeStart: 320, rangeEnd: 480, toFieldId: "secret-forest", toSpawnId: "from-path", travelMinutes: 5, requiresSecretRoute: true },
     ],
     objects: [
       { id: "brush-left", kind: "bush", x: 0, y: 0, width: 245, height: 1500, solid: true },
@@ -452,8 +495,8 @@ export const fields: FieldDefinition[] = [
     width: 1250,
     height: 1100,
     defaultSpawnId: "from-path",
-    spawnPoints: [spawn("from-path", 625, 970, "up")],
-    exits: [{ id: "to-path", label: "秘密の小道へ", x: 625, y: 1030, toFieldId: "secret-path", toSpawnId: "from-secret", travelMinutes: 5 }],
+    spawnPoints: [spawn("from-path", 625, 1028, "up")],
+    exits: [{ id: "to-path", label: "秘密の小道へ", side: "bottom", rangeStart: 545, rangeEnd: 705, toFieldId: "secret-path", toSpawnId: "from-secret", travelMinutes: 5 }],
     objects: [
       { id: "brush-top", kind: "bush", x: 0, y: 0, width: 1250, height: 70, solid: true },
       { id: "brush-left", kind: "bush", x: 0, y: 0, width: 70, height: 1100, solid: true },
@@ -486,5 +529,3 @@ export const getSpawnPoint = (fieldId: FieldId, spawnId?: string): FieldSpawnPoi
     field.spawnPoints[0]
   );
 };
-
-export const getDefaultFieldForLocation = (locationId: LocationId): FieldId => locationId;

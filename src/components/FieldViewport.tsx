@@ -8,30 +8,40 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { fieldById } from "../data/fields";
-import { locationById } from "../data/locations";
+import { fieldById, type EdgeExit } from "../data/fields";
 import { npcById } from "../data/npcs";
+import { treesByFieldId } from "../data/trees";
 import { getTimePeriod } from "../game/clock";
 import {
   INTERACTION_RADIUS,
+  PLAYER_RADIUS,
   PLAYER_SPEED,
+  distanceBetween,
+  edgeExitAnchor,
   findNearestInteractionTarget,
+  findTriggeredEdgeExit,
+  getBoundarySegments,
   getCameraOffset,
   getFieldCollisionRects,
   moveWithCollisions,
   normalizeMovement,
 } from "../game/field";
+import {
+  generateInspectionSession,
+  getInspectionSessionId,
+  isInspectionComplete,
+} from "../game/inspection";
 import { isFieldExitAvailable, presentNpcs } from "../game/rules";
 import type {
   FacingDirection,
   GameCommand,
   GameState,
-  HotspotDefinition,
   NpcDefinition,
+  TreeDefinition,
 } from "../types/game";
 
-const SpotArtwork = ({ hotspot }: { hotspot: HotspotDefinition }) => (
-  <span className={`field-spot-art field-spot-${hotspot.kind}`} aria-hidden="true">
+const TreeArtwork = ({ tree }: { tree: TreeDefinition }) => (
+  <span className={`field-spot-art field-spot-${tree.encounterKind}`} aria-hidden="true">
     <i className="field-spot-top" />
     <i className="field-spot-base" />
   </span>
@@ -51,12 +61,13 @@ const NpcArtwork = ({ npc }: { npc: NpcDefinition }) => (
 type InteractionTarget =
   | {
       key: string;
-      kind: "hotspot";
+      kind: "tree";
       x: number;
       y: number;
       label: string;
-      spotId: string;
+      treeId: string;
       searched: boolean;
+      active: boolean;
     }
   | {
       key: string;
@@ -65,17 +76,6 @@ type InteractionTarget =
       y: number;
       label: string;
       npcId: NpcDefinition["id"];
-    }
-  | {
-      key: string;
-      kind: "exit";
-      x: number;
-      y: number;
-      label: string;
-      exitId: string;
-      travelMinutes: number;
-      available: boolean;
-      reason?: string;
     }
   | {
       key: string;
@@ -97,6 +97,11 @@ export interface FieldViewportHandle {
 }
 
 const movementKeys = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "w", "a", "s", "d"]);
+const edgeFacing = (exit: EdgeExit): FacingDirection => {
+  if (exit.side === "top") return "up";
+  if (exit.side === "bottom") return "down";
+  return exit.side;
+};
 
 export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>(function FieldViewport({
   state,
@@ -119,58 +124,78 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
   const movingRef = useRef(false);
   const nearbyKeyRef = useRef<string | null>(null);
   const commitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const transitionTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const transitionRef = useRef(false);
+  const transitionSequenceRef = useRef(0);
+  const pendingCluesRef = useRef(new Set<string>());
+  const closedNoticeAtRef = useRef(new Map<string, number>());
   const [nearbyKey, setNearbyKey] = useState<string | null>(null);
-  const obstacles = useMemo(() => getFieldCollisionRects(field), [field]);
-  const location = field.locationId ? locationById[field.locationId] : undefined;
-  const searched = state.exploration?.searchedSpotIds ?? [];
+  const [transitioning, setTransitioning] = useState(false);
+  const [transitionLabel, setTransitionLabel] = useState("");
+
+  const treeStates = useMemo(() => treesByFieldId[field.id].map((tree) => {
+    const sessionId = state.exploration ? getInspectionSessionId(state, tree) : null;
+    const stored = sessionId ? state.inspectionSessions[sessionId] : undefined;
+    const preview = stored ?? (state.exploration ? generateInspectionSession(state, tree) : null);
+    return {
+      tree,
+      sessionId,
+      preview,
+      trapState: state.trapStates[tree.id]?.installed ? state.trapStates[tree.id] : undefined,
+      clueDiscovered: Boolean(sessionId && state.discoveredClueSessionIds.includes(sessionId)),
+      searched: Boolean(stored?.committed && isInspectionComplete(stored, tree)),
+      active: Boolean(preview),
+    };
+  }), [field.id, state]);
+
+  const exitAccess = useMemo(() => new Map(field.exits.map((exit) => [
+    exit.id,
+    isFieldExitAvailable(state, exit),
+  ])), [field.exits, state]);
+  const availableExitIds = useMemo(
+    () => new Set([...exitAccess].filter(([, access]) => access.available).map(([id]) => id)),
+    [exitAccess],
+  );
+  const closedExitIds = useMemo(
+    () => [...exitAccess].filter(([, access]) => !access.available).map(([id]) => id),
+    [exitAccess],
+  );
+  const obstacles = useMemo(() => getFieldCollisionRects(field, closedExitIds), [closedExitIds, field]);
+  const boundarySegments = useMemo(
+    () => getBoundarySegments(field, availableExitIds),
+    [availableExitIds, field],
+  );
   const presentNpcIds = useMemo(
     () => new Set(presentNpcs(state).map((npc) => npc.id)),
     [state],
   );
 
   const targets = useMemo<InteractionTarget[]>(() => {
-    const hotspotTargets: InteractionTarget[] = field.hotspots.flatMap((position) => {
-      const hotspot = location?.hotspots.find((candidate) => candidate.id === position.spotId);
-      if (!hotspot) return [];
-      return [{
-        key: `hotspot:${hotspot.id}`,
-        kind: "hotspot" as const,
-        x: position.x,
-        y: position.y + 30,
-        label: hotspot.label,
-        spotId: hotspot.id,
-        searched: searched.includes(hotspot.id),
-      }];
-    });
+    const treeTargets: InteractionTarget[] = treeStates.map(({ tree, searched, active }) => ({
+      key: `tree:${tree.id}`,
+      kind: "tree",
+      x: tree.x,
+      y: tree.y + 30,
+      label: tree.label,
+      treeId: tree.id,
+      searched,
+      active,
+    }));
     const npcTargets: InteractionTarget[] = field.npcPositions
       .filter((position) => presentNpcIds.has(position.npcId))
       .map((position) => ({
         key: `npc:${position.npcId}`,
-        kind: "npc" as const,
+        kind: "npc",
         x: position.x,
         y: position.y,
         label: npcById[position.npcId].name,
         npcId: position.npcId,
       }));
-    const exitTargets: InteractionTarget[] = field.exits.map((exit) => {
-      const access = isFieldExitAvailable(state, exit);
-      return {
-        key: `exit:${exit.id}`,
-        kind: "exit" as const,
-        x: exit.x,
-        y: exit.y,
-        label: exit.label,
-        exitId: exit.id,
-        travelMinutes: exit.travelMinutes,
-        available: access.available,
-        reason: access.reason,
-      };
-    });
     const rewardTargets: InteractionTarget[] = field.rewardPoint
       ? [{ key: "reward", kind: "reward", ...field.rewardPoint }]
       : [];
-    return [...hotspotTargets, ...npcTargets, ...exitTargets, ...rewardTargets];
-  }, [field, location, presentNpcIds, searched, state]);
+    return [...treeTargets, ...npcTargets, ...rewardTargets];
+  }, [field.npcPositions, field.rewardPoint, presentNpcIds, treeStates]);
 
   const nearbyTarget = targets.find((target) => target.key === nearbyKey) ?? null;
 
@@ -183,12 +208,29 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
     }
   }, [targets]);
 
-  const paintPosition = useCallback((position: { x: number; y: number }) => {
-    const viewport = viewportSizeRef.current;
-    const camera = getCameraOffset(position, viewport, field);
-    if (worldRef.current) {
-      worldRef.current.style.transform = `translate3d(${-camera.x}px, ${-camera.y}px, 0)`;
+  const discoverNearbyClues = useCallback((position: { x: number; y: number }) => {
+    for (const item of treeStates) {
+      if (
+        !item.sessionId ||
+        !item.preview?.clueVisible ||
+        item.clueDiscovered ||
+        pendingCluesRef.current.has(item.sessionId) ||
+        distanceBetween(position, item.tree) > 220
+      ) continue;
+      pendingCluesRef.current.add(item.sessionId);
+      dispatch({
+        type: "DISCOVER_TREE_CLUE",
+        treeId: item.tree.id,
+        x: position.x,
+        y: position.y,
+        facing: facingRef.current,
+      });
     }
+  }, [dispatch, treeStates]);
+
+  const paintPosition = useCallback((position: { x: number; y: number }) => {
+    const camera = getCameraOffset(position, viewportSizeRef.current, field);
+    if (worldRef.current) worldRef.current.style.transform = `translate3d(${-camera.x}px, ${-camera.y}px, 0)`;
     if (playerRef.current) {
       playerRef.current.style.transform = `translate3d(${position.x - 26}px, ${position.y - 48}px, 0)`;
       playerRef.current.style.zIndex = String(Math.round(position.y));
@@ -211,11 +253,60 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
     joystickRef.current = { x: 0, y: 0 };
     activePointerRef.current = null;
     movingRef.current = false;
-    if (joystickKnobRef.current) {
-      joystickKnobRef.current.style.transform = "translate3d(0, 0, 0)";
-    }
+    if (joystickKnobRef.current) joystickKnobRef.current.style.transform = "translate3d(0, 0, 0)";
     paintPosition(positionRef.current);
   }, [paintPosition]);
+
+  const triggerTravel = useCallback((exit: EdgeExit, position: { x: number; y: number }) => {
+    if (transitionRef.current || inputLocked) return;
+    transitionRef.current = true;
+    setTransitioning(true);
+    setTransitionLabel(exit.label);
+    clearInput();
+    const token = `${state.revision}:${field.id}:${exit.id}:${++transitionSequenceRef.current}`;
+    transitionTimersRef.current.push(setTimeout(() => {
+      dispatch({
+        type: "TRAVEL_EDGE",
+        exitId: exit.id,
+        x: position.x,
+        y: position.y,
+        facing: edgeFacing(exit),
+        transitionToken: token,
+      });
+    }, 210));
+    transitionTimersRef.current.push(setTimeout(() => {
+      transitionRef.current = false;
+      setTransitioning(false);
+      setTransitionLabel("");
+    }, 470));
+  }, [clearInput, dispatch, field.id, inputLocked, state.revision]);
+
+  const notifyClosedExit = useCallback((exit: EdgeExit) => {
+    const now = Date.now();
+    if ((closedNoticeAtRef.current.get(exit.id) ?? 0) + 3000 > now) return;
+    closedNoticeAtRef.current.set(exit.id, now);
+    dispatch({
+      type: "TRAVEL_EDGE",
+      exitId: exit.id,
+      x: positionRef.current.x,
+      y: positionRef.current.y,
+      facing: edgeFacing(exit),
+      transitionToken: `closed:${field.id}:${exit.id}:${now}`,
+    });
+  }, [dispatch, field.id]);
+
+  const approachedClosedExit = useCallback((
+    position: { x: number; y: number },
+    movement: { x: number; y: number; facing: FacingDirection },
+  ): EdgeExit | null => field.exits.find((exit) => {
+    if (availableExitIds.has(exit.id) || edgeFacing(exit) !== movement.facing) return false;
+    const coordinate = exit.side === "top" || exit.side === "bottom" ? position.x : position.y;
+    if (coordinate < exit.rangeStart || coordinate > exit.rangeEnd) return false;
+    if (exit.side === "left") return position.x <= PLAYER_RADIUS + 58;
+    if (exit.side === "right") return position.x >= field.width - PLAYER_RADIUS - 58;
+    if (exit.side === "top") return position.y <= PLAYER_RADIUS + 58;
+    return position.y >= field.height - PLAYER_RADIUS - 58;
+  }) ?? null, [availableExitIds, field]);
 
   useImperativeHandle(ref, () => ({ commitPosition }), [commitPosition]);
 
@@ -225,12 +316,16 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
     movingRef.current = false;
     nearbyKeyRef.current = null;
     setNearbyKey(null);
+    pendingCluesRef.current = new Set(
+      [...pendingCluesRef.current].filter((id) => !state.discoveredClueSessionIds.includes(id)),
+    );
     paintPosition(positionRef.current);
-  }, [state.field.fieldId, state.field.x, state.field.y, state.field.facing, paintPosition]);
+  }, [state.field.fieldId, state.field.x, state.field.y, state.field.facing, state.discoveredClueSessionIds, paintPosition]);
 
   useEffect(() => {
     updateNearbyTarget(positionRef.current);
-  }, [updateNearbyTarget]);
+    discoverNearbyClues(positionRef.current);
+  }, [discoverNearbyClues, updateNearbyTarget]);
 
   useEffect(() => {
     clearInput();
@@ -247,10 +342,7 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
     const viewport = viewportRef.current;
     if (!viewport) return;
     const updateSize = () => {
-      viewportSizeRef.current = {
-        width: viewport.clientWidth,
-        height: viewport.clientHeight,
-      };
+      viewportSizeRef.current = { width: viewport.clientWidth, height: viewport.clientHeight };
       paintPosition(positionRef.current);
     };
     updateSize();
@@ -258,6 +350,11 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
     observer.observe(viewport);
     return () => observer.disconnect();
   }, [paintPosition]);
+
+  useEffect(() => () => {
+    transitionTimersRef.current.forEach(clearTimeout);
+    transitionTimersRef.current = [];
+  }, []);
 
   useEffect(() => {
     let frame = 0;
@@ -272,7 +369,7 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
       if (keys.has("ArrowRight") || keys.has("d")) inputX += 1;
       if (keys.has("ArrowUp") || keys.has("w")) inputY -= 1;
       if (keys.has("ArrowDown") || keys.has("s")) inputY += 1;
-      const movement = inputLocked || !state.flags.fieldTutorialSeen
+      const movement = inputLocked || transitioning || transitionRef.current || !state.flags.fieldTutorialSeen
         ? null
         : normalizeMovement(inputX, inputY);
       const wasMoving = movingRef.current;
@@ -283,14 +380,20 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
           commitTimerRef.current = null;
         }
         facingRef.current = movement.facing;
-        positionRef.current = moveWithCollisions(
-          positionRef.current,
-          { x: movement.x * PLAYER_SPEED * seconds, y: movement.y * PLAYER_SPEED * seconds },
-          field,
-          obstacles,
-        );
-        paintPosition(positionRef.current);
-        updateNearbyTarget(positionRef.current);
+        const delta = { x: movement.x * PLAYER_SPEED * seconds, y: movement.y * PLAYER_SPEED * seconds };
+        const previousPosition = positionRef.current;
+        const exit = findTriggeredEdgeExit(previousPosition, delta, field, availableExitIds);
+        const next = moveWithCollisions(previousPosition, delta, field, obstacles);
+        const blocked = next.x === previousPosition.x && next.y === previousPosition.y;
+        positionRef.current = next;
+        paintPosition(next);
+        updateNearbyTarget(next);
+        discoverNearbyClues(next);
+        if (exit) triggerTravel(exit, next);
+        else {
+          const closed = approachedClosedExit(next, movement);
+          if (closed && blocked) notifyClosedExit(closed);
+        }
       } else if (wasMoving) {
         paintPosition(positionRef.current);
         commitTimerRef.current = setTimeout(() => {
@@ -305,23 +408,31 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
       cancelAnimationFrame(frame);
       if (commitTimerRef.current) clearTimeout(commitTimerRef.current);
     };
-  }, [commitPosition, field, inputLocked, obstacles, paintPosition, state.flags.fieldTutorialSeen, updateNearbyTarget]);
+  }, [
+    approachedClosedExit,
+    availableExitIds,
+    commitPosition,
+    discoverNearbyClues,
+    field,
+    inputLocked,
+    notifyClosedExit,
+    obstacles,
+    paintPosition,
+    state.flags.fieldTutorialSeen,
+    transitioning,
+    triggerTravel,
+    updateNearbyTarget,
+  ]);
 
   const runAction = useCallback(() => {
     const target = targets.find((candidate) => candidate.key === nearbyKeyRef.current);
-    if (!target || inputLocked || !state.flags.fieldTutorialSeen) return;
+    if (!target || inputLocked || transitioning || !state.flags.fieldTutorialSeen) return;
     clearInput();
     commitPosition();
-    if (target.kind === "hotspot") {
-      dispatch({ type: "INSPECT_SPOT", spotId: target.spotId });
-    } else if (target.kind === "npc") {
-      dispatch({ type: "TALK", npcId: target.npcId });
-    } else if (target.kind === "exit") {
-      dispatch({ type: "TRAVEL_EXIT", exitId: target.exitId });
-    } else {
-      onOpenRewards();
-    }
-  }, [clearInput, commitPosition, dispatch, inputLocked, onOpenRewards, state.flags.fieldTutorialSeen, targets]);
+    if (target.kind === "tree") dispatch({ type: "OPEN_TREE_INSPECTION", treeId: target.treeId });
+    else if (target.kind === "npc") dispatch({ type: "TALK", npcId: target.npcId });
+    else onOpenRewards();
+  }, [clearInput, commitPosition, dispatch, inputLocked, onOpenRewards, state.flags.fieldTutorialSeen, targets, transitioning]);
 
   useEffect(() => {
     const keyDown = (event: KeyboardEvent) => {
@@ -340,27 +451,22 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
       const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
       keysRef.current.delete(key);
     };
-    const visibility = () => {
-      if (document.hidden) {
-        clearInput();
-        commitPosition();
-      }
-    };
-    const blur = () => {
+    const stop = () => {
       clearInput();
       commitPosition();
     };
+    const visibility = () => { if (document.hidden) stop(); };
     window.addEventListener("keydown", keyDown);
     window.addEventListener("keyup", keyUp);
-    window.addEventListener("blur", blur);
+    window.addEventListener("blur", stop);
     document.addEventListener("visibilitychange", visibility);
     return () => {
       window.removeEventListener("keydown", keyDown);
       window.removeEventListener("keyup", keyUp);
-      window.removeEventListener("blur", blur);
+      window.removeEventListener("blur", stop);
       document.removeEventListener("visibilitychange", visibility);
     };
-  }, [commitPosition, runAction]);
+  }, [clearInput, commitPosition, runAction]);
 
   const updateJoystick = (event: ReactPointerEvent<HTMLDivElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -372,13 +478,11 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
     const x = dx * scale;
     const y = dy * scale;
     joystickRef.current = { x: x / max, y: y / max };
-    if (joystickKnobRef.current) {
-      joystickKnobRef.current.style.transform = `translate3d(${x}px, ${y}px, 0)`;
-    }
+    if (joystickKnobRef.current) joystickKnobRef.current.style.transform = `translate3d(${x}px, ${y}px, 0)`;
   };
 
   const startJoystick = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (activePointerRef.current !== null) return;
+    if (activePointerRef.current !== null || inputLocked || transitioning) return;
     activePointerRef.current = event.pointerId;
     event.currentTarget.setPointerCapture(event.pointerId);
     updateJoystick(event);
@@ -386,25 +490,34 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
 
   const stopJoystick = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (activePointerRef.current !== event.pointerId) return;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     activePointerRef.current = null;
     joystickRef.current = { x: 0, y: 0 };
     if (joystickKnobRef.current) joystickKnobRef.current.style.transform = "translate3d(0, 0, 0)";
   };
 
   const nudge = (x: number, y: number, facing: FacingDirection) => {
-    if (inputLocked || !state.flags.fieldTutorialSeen) return;
+    if (inputLocked || transitioning || !state.flags.fieldTutorialSeen) return;
     facingRef.current = facing;
-    positionRef.current = moveWithCollisions(positionRef.current, { x, y }, field, obstacles);
+    const delta = { x, y };
+    const previousPosition = positionRef.current;
+    const exit = findTriggeredEdgeExit(previousPosition, delta, field, availableExitIds);
+    positionRef.current = moveWithCollisions(previousPosition, delta, field, obstacles);
+    const blocked = positionRef.current.x === previousPosition.x && positionRef.current.y === previousPosition.y;
     paintPosition(positionRef.current);
     updateNearbyTarget(positionRef.current);
-    commitPosition();
+    discoverNearbyClues(positionRef.current);
+    if (exit) triggerTravel(exit, positionRef.current);
+    else {
+      const movement = normalizeMovement(x, y);
+      const closed = movement ? approachedClosedExit(positionRef.current, movement) : null;
+      if (closed && blocked) notifyClosedExit(closed);
+      else commitPosition();
+    }
   };
 
   const resetToSafePosition = () => {
-    if (inputLocked || !state.flags.fieldTutorialSeen) return;
+    if (inputLocked || transitioning || !state.flags.fieldTutorialSeen) return;
     clearInput();
     positionRef.current = { x: state.field.lastSafeX, y: state.field.lastSafeY };
     facingRef.current = "down";
@@ -415,107 +528,87 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
 
   const actionLabel = !nearbyTarget
     ? "近づくと行動できます"
-    : nearbyTarget.kind === "hotspot"
-      ? nearbyTarget.searched
-        ? `${nearbyTarget.label}は調査済み`
-        : `${nearbyTarget.label}を覗く · 15分`
+    : nearbyTarget.kind === "tree"
+      ? !nearbyTarget.active
+        ? `${nearbyTarget.label}は今は静かです`
+        : nearbyTarget.searched
+          ? `${nearbyTarget.label}をもう一度覗く`
+          : `${nearbyTarget.label}を調べる · 15分`
       : nearbyTarget.kind === "npc"
         ? `${nearbyTarget.label}と話す · 15分`
-        : nearbyTarget.kind === "exit"
-          ? nearbyTarget.available
-            ? `${nearbyTarget.label} · ${nearbyTarget.travelMinutes}分`
-            : nearbyTarget.reason ?? "今は通れません"
-          : nearbyTarget.label;
+        : nearbyTarget.label;
 
   return (
     <section
       ref={viewportRef}
-      className={`field-viewport field-theme-${field.theme} period-${period}`}
+      className={`field-viewport field-theme-${field.theme} period-${period} ${transitioning ? "is-transitioning" : ""}`}
       aria-label={`${field.name}の探索フィールド`}
     >
-      <div
-        ref={worldRef}
-        className="field-world"
-        style={{ width: field.width, height: field.height }}
-        aria-hidden="true"
-      >
+      <div ref={worldRef} className="field-world" style={{ width: field.width, height: field.height }} aria-hidden="true">
         <div className="field-ground-detail" />
+        {boundarySegments.map((segment, index) => (
+          <div
+            className={`field-boundary field-boundary-${segment.side}`}
+            key={`${segment.side}-${index}`}
+            style={{ left: segment.x, top: segment.y, width: segment.width, height: segment.height }}
+          />
+        ))}
         {field.objects.map((object) => (
           <div
             className={`field-object field-object-${object.kind}`}
             key={object.id}
-            style={{
-              left: object.x,
-              top: object.y,
-              width: object.width,
-              height: object.height,
-              zIndex: Math.round(object.y + object.height),
-            }}
+            style={{ left: object.x, top: object.y, width: object.width, height: object.height, zIndex: Math.round(object.y + object.height) }}
           >
             {object.label && <span>{object.label}</span>}
           </div>
         ))}
         {field.exits.map((exit) => {
-          const access = isFieldExitAvailable(state, exit);
+          const access = exitAccess.get(exit.id)!;
+          const anchor = edgeExitAnchor(exit, field);
           return (
             <div
-              className={`field-exit ${access.available ? "is-open" : "is-closed"}`}
+              className={`field-exit field-exit-${exit.side} ${access.available ? "is-open" : "is-closed"}`}
               key={exit.id}
-              style={{ left: exit.x, top: exit.y, zIndex: Math.round(exit.y) }}
+              style={{ left: anchor.x, top: anchor.y, zIndex: Math.round(anchor.y + 40) }}
             >
               <i />
-              <span>{exit.label}</span>
+              <span>{access.available ? exit.label : access.reason ?? "今は通れません"}</span>
             </div>
           );
         })}
-        {field.hotspots.map((position) => {
-          const hotspot = location?.hotspots.find((candidate) => candidate.id === position.spotId);
-          if (!hotspot) return null;
-          const isSearched = searched.includes(hotspot.id);
-          const inactive = hotspot.activePeriods && !hotspot.activePeriods.includes(period);
-          return (
-            <div
-              className={`field-hotspot ${isSearched ? "is-searched" : ""} ${inactive ? "is-inactive" : ""}`}
-              key={hotspot.id}
-              style={{ left: position.x, top: position.y, zIndex: Math.round(position.y) }}
-            >
-              <SpotArtwork hotspot={hotspot} />
-              <span>{hotspot.label}</span>
-              {isSearched && <small>調査済み</small>}
+        {treeStates.map(({ tree, trapState, clueDiscovered, searched, active }) => (
+          <div
+            className={`field-hotspot ${searched ? "is-searched" : ""}`}
+            key={tree.id}
+            style={{ left: tree.x, top: tree.y, zIndex: Math.round(tree.y) }}
+          >
+            <TreeArtwork tree={tree} />
+            <span>{tree.label}</span>
+            <div className="tree-marker-stack">
+              {clueDiscovered && <b className="tree-clue-marker" title="何かの気配">！</b>}
+              {trapState && <b className={`tree-trap-marker trap-${trapState.kind} ${active ? "is-active" : ""}`} title={active ? "利用できる仕掛け" : "今は利用できない仕掛け"}>♢</b>}
+              {searched && <b className="tree-checked-marker" title="今回の調査済み">✓</b>}
             </div>
-          );
-        })}
+          </div>
+        ))}
         {field.npcPositions
           .filter((position) => presentNpcIds.has(position.npcId))
           .map((position) => {
             const npc = npcById[position.npcId];
             return (
-              <div
-                className="field-npc"
-                key={npc.id}
-                style={{ left: position.x, top: position.y, zIndex: Math.round(position.y) }}
-              >
+              <div className="field-npc" key={npc.id} style={{ left: position.x, top: position.y, zIndex: Math.round(position.y) }}>
                 <NpcArtwork npc={npc} />
                 <span>{npc.name}</span>
               </div>
             );
           })}
         {field.rewardPoint && (
-          <div
-            className="field-reward-point"
-            style={{ left: field.rewardPoint.x, top: field.rewardPoint.y, zIndex: Math.round(field.rewardPoint.y) }}
-          >
+          <div className="field-reward-point" style={{ left: field.rewardPoint.x, top: field.rewardPoint.y, zIndex: Math.round(field.rewardPoint.y) }}>
             <i />
             <span>応援</span>
           </div>
         )}
-        <div
-          ref={playerRef}
-          className="field-player"
-          data-facing={state.field.facing}
-          data-moving="false"
-          style={{ zIndex: Math.round(state.field.y) }}
-        >
+        <div ref={playerRef} className="field-player" data-facing={state.field.facing} data-moving="false" style={{ zIndex: Math.round(state.field.y) }}>
           <i className="player-hat" />
           <i className="player-head" />
           <i className="player-body" />
@@ -530,11 +623,7 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
         <strong>{field.name}</strong>
         <span>{field.description}</span>
       </div>
-      <button
-        className="position-reset-button"
-        onClick={resetToSafePosition}
-        disabled={inputLocked || !state.flags.fieldTutorialSeen}
-      >
+      <button className="position-reset-button" onClick={resetToSafePosition} disabled={inputLocked || transitioning || !state.flags.fieldTutorialSeen}>
         位置を戻す
       </button>
 
@@ -542,10 +631,7 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
         className="virtual-joystick"
         onPointerDown={startJoystick}
         onPointerMove={(event) => {
-          if (
-            activePointerRef.current === event.pointerId &&
-            event.currentTarget.hasPointerCapture(event.pointerId)
-          ) updateJoystick(event);
+          if (activePointerRef.current === event.pointerId && event.currentTarget.hasPointerCapture(event.pointerId)) updateJoystick(event);
         }}
         onPointerUp={stopJoystick}
         onPointerCancel={stopJoystick}
@@ -557,27 +643,30 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
       <button
         className={`context-action-button ${nearbyTarget ? "is-ready" : ""}`}
         onClick={runAction}
-        disabled={!nearbyTarget || inputLocked || !state.flags.fieldTutorialSeen}
+        disabled={!nearbyTarget || inputLocked || transitioning || !state.flags.fieldTutorialSeen}
         aria-keyshortcuts="Enter Space"
         aria-live="polite"
       >
-        <small>{nearbyTarget?.kind === "exit" ? "移動" : nearbyTarget?.kind === "npc" ? "会話" : "行動"}</small>
+        <small>{nearbyTarget?.kind === "npc" ? "会話" : "行動"}</small>
         <strong>{actionLabel}</strong>
       </button>
 
       <div className="accessible-dpad" role="group" aria-label="移動ボタン">
-        <button disabled={inputLocked || !state.flags.fieldTutorialSeen} onClick={() => nudge(0, -36, "up")} aria-label="上へ歩く">上</button>
-        <button disabled={inputLocked || !state.flags.fieldTutorialSeen} onClick={() => nudge(-36, 0, "left")} aria-label="左へ歩く">左</button>
-        <button disabled={inputLocked || !state.flags.fieldTutorialSeen} onClick={() => nudge(36, 0, "right")} aria-label="右へ歩く">右</button>
-        <button disabled={inputLocked || !state.flags.fieldTutorialSeen} onClick={() => nudge(0, 36, "down")} aria-label="下へ歩く">下</button>
+        <button disabled={inputLocked || transitioning || !state.flags.fieldTutorialSeen} onClick={() => nudge(0, -36, "up")} aria-label="上へ歩く">上</button>
+        <button disabled={inputLocked || transitioning || !state.flags.fieldTutorialSeen} onClick={() => nudge(-36, 0, "left")} aria-label="左へ歩く">左</button>
+        <button disabled={inputLocked || transitioning || !state.flags.fieldTutorialSeen} onClick={() => nudge(36, 0, "right")} aria-label="右へ歩く">右</button>
+        <button disabled={inputLocked || transitioning || !state.flags.fieldTutorialSeen} onClick={() => nudge(0, 36, "down")} aria-label="下へ歩く">下</button>
       </div>
+
+      {transitioning && <div className="field-transition-curtain" aria-live="polite"><span>{transitionLabel}</span></div>}
 
       {!state.flags.fieldTutorialSeen && (
         <div className="field-tutorial" role="dialog" aria-modal="true" aria-labelledby="field-tutorial-title">
           <div>
             <small>新しい虫取りの始まり</small>
             <h2 id="field-tutorial-title">自分の足で歩いてみよう</h2>
-            <p>左下のスティックで歩き、木や人、道の出口へ近づいたら右下のボタンを押します。</p>
+            <p>左下のスティックで歩き、木や人へ近づいたら右下のボタンを押します。</p>
+            <p>道として開いている画面の端まで歩くと、次の場所へ移動します。</p>
             <p>PCでは矢印キー・WASDとEnterでも操作できます。</p>
             <button autoFocus onClick={() => dispatch({ type: "DISMISS_FIELD_TUTORIAL" })}>歩き始める</button>
           </div>

@@ -1,13 +1,14 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { fields } from "../data/fields";
+import { fieldById } from "../data/fields";
 import { insects, insectById } from "../data/insects";
 import { locationById } from "../data/locations";
 import { npcs, npcById } from "../data/npcs";
+import { treeById } from "../data/trees";
 import { formatTime } from "../game/clock";
 import { getOutcomeTitle } from "../game/engine";
 import { getGrandmaHint, isLocationAvailable } from "../game/rules";
 import { MockAdRewardProvider } from "../ports/AdRewardProvider";
-import type { AdRewardKind, GameCommand, GameState, Outcome } from "../types/game";
+import type { AdRewardKind, FieldId, GameCommand, GameState, Outcome } from "../types/game";
 
 interface SheetProps {
   title: string;
@@ -102,41 +103,60 @@ export const MapSheet = ({
   onClose: () => void;
 }) => {
   const discovered = new Set(state.field.discoveredFieldIds);
-  const visibleFields = fields.filter((field) => !field.secret || state.flags.secretRouteUnlocked);
+  const mainLoopIds: FieldId[] = [
+    "mixed-forest",
+    "oak-forest",
+    "school",
+    "forest-road",
+    "bamboo-grove",
+    "grandma-house",
+    "paddy-road",
+    "shrine",
+  ];
+  const branchIds: FieldId[] = state.flags.secretRouteUnlocked
+    ? ["backyard", "secret-path", "secret-forest"]
+    : ["backyard"];
+  const renderNode = (fieldId: FieldId, branch = false) => {
+    const field = fieldById[fieldId];
+    const current = field.id === state.field.fieldId;
+    const known = discovered.has(field.id);
+    const access = field.locationId
+      ? isLocationAvailable(state, field.locationId)
+      : { available: state.timeMinutes < 1080, reason: "18時以降は通れません" };
+    return (
+      <div
+        className={`field-map-node map-slot-${field.id} ${branch ? "is-branch" : ""} ${current ? "is-current" : ""} ${known ? "is-known" : "is-unknown"}`}
+        key={field.id}
+      >
+        <i aria-hidden="true" />
+        <span>
+          <strong>{field.name}</strong>
+          <small>
+            {current
+              ? "いまここ"
+              : !known
+                ? "まだ歩いていません"
+                : access.available
+                  ? "発見済み"
+                  : access.reason}
+          </small>
+        </span>
+      </div>
+    );
+  };
   return (
     <Sheet title="村の地図" eyebrow={`${state.day}日目 ${formatTime(state.timeMinutes)}`} onClose={onClose}>
       {state.timeMinutes >= 1080 && (
         <div className="night-rule">18時以降は、おばあちゃんの家と裏庭だけ。</div>
       )}
       <div className="map-walk-note">地図は現在地の確認用です。道や出口まで歩いて移動しよう。</div>
-      <div className="field-map-grid" aria-label="村の場所と道">
-        {visibleFields.map((field) => {
-          const current = field.id === state.field.fieldId;
-          const known = discovered.has(field.id);
-          const access = field.locationId
-            ? isLocationAvailable(state, field.locationId)
-            : { available: state.timeMinutes < 1080, reason: "18時以降は通れません" };
-          return (
-            <div
-              className={`field-map-node ${current ? "is-current" : ""} ${known ? "is-known" : "is-unknown"}`}
-              key={field.id}
-            >
-              <i aria-hidden="true" />
-              <span>
-                <strong>{field.name}</strong>
-                <small>
-                  {current
-                    ? "いまここ"
-                    : !known
-                      ? "まだ歩いていません"
-                      : access.available
-                        ? "発見済み"
-                        : access.reason}
-                </small>
-              </span>
-            </div>
-          );
-        })}
+      <div className="map-section-label">家へ戻ってくる主周回路</div>
+      <div className="field-map-grid" aria-label="家を起点に一周できる村の主周回路">
+        {mainLoopIds.map((fieldId) => renderNode(fieldId))}
+      </div>
+      <div className="map-section-label">寄り道</div>
+      <div className="field-map-branches" aria-label="主周回路からの寄り道">
+        {branchIds.map((fieldId) => renderNode(fieldId, true))}
       </div>
       <div className="map-controls-help">
         <strong>操作</strong>
@@ -262,6 +282,25 @@ export const RewardSheet = ({
 };
 
 export const OutcomeSheet = ({ outcome, onClose }: { outcome: Outcome; onClose: () => void }) => {
+  const [catchRevealed, setCatchRevealed] = useState(outcome.type !== "caught");
+  useEffect(() => {
+    if (outcome.type !== "caught") {
+      setCatchRevealed(true);
+      return;
+    }
+    setCatchRevealed(false);
+    const timer = setTimeout(() => setCatchRevealed(true), 480);
+    return () => clearTimeout(timer);
+  }, [outcome]);
+
+  if (outcome.type === "caught" && !catchRevealed) {
+    return (
+      <div className="capture-cutscene" role="dialog" aria-modal="true" aria-label="捕獲演出">
+        <div className="capture-net" aria-hidden="true"><i /></div>
+        <strong>つかまえた！</strong>
+      </div>
+    );
+  }
   const title = getOutcomeTitle(outcome);
   return (
     <Sheet
@@ -279,10 +318,24 @@ export const OutcomeSheet = ({ outcome, onClose }: { outcome: Outcome; onClose: 
             <span>大きさ</span>
             <strong>{outcome.specimen.sizeMm.toFixed(1)}<small>mm</small></strong>
           </div>
-          {outcome.isPersonalBest && <div className="record-badge">自己記録</div>}
-          <p>
-            {locationById[outcome.specimen.locationId].name}で見つけた。大きさは広告効果に左右されません。
-          </p>
+          <div className="record-badges">
+            {outcome.isFirstCatch && <span className="record-badge">初捕獲・図鑑追加</span>}
+            {outcome.isPersonalBest && !outcome.isFirstCatch && <span className="record-badge">自己ベスト更新</span>}
+          </div>
+          <dl className="catch-details">
+            <div><dt>分類</dt><dd>{insectById[outcome.specimen.insectId].family}</dd></div>
+            <div><dt>場所</dt><dd>{locationById[outcome.specimen.locationId].name}</dd></div>
+            <div>
+              <dt>見つけた所</dt>
+              <dd>
+                {outcome.specimen.treeId && treeById[outcome.specimen.treeId]
+                  ? `${treeById[outcome.specimen.treeId].label}・${treeById[outcome.specimen.treeId].inspectionPoints.find((point) => point.id === outcome.specimen.inspectionPointId)?.label ?? "木のそば"}`
+                  : "木のそば"}
+              </dd>
+            </div>
+            <div><dt>記録</dt><dd>{outcome.specimen.day}日目 {formatTime(outcome.specimen.caughtAtMinutes)}</dd></div>
+          </dl>
+          <p>大きさは広告効果に左右されません。</p>
           <div className={`ranking-note ${outcome.specimen.rankingEligible ? "is-eligible" : "is-assisted"}`}>
             {outcome.specimen.rankingEligible
               ? "自然出現：将来のランキング対象"
