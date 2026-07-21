@@ -330,8 +330,8 @@ export interface GameBuffs {
 }
 
 export interface GameState {
-  schemaVersion: 5;
-  contentVersion: 5;
+  schemaVersion: 6;
+  contentVersion: 6;
   rngVersion: 1;
   worldSeed: string;
   revision: number;
@@ -343,6 +343,7 @@ export interface GameState {
   visitCounters: Partial<Record<LocationId, number>>;
   exploration?: ExplorationState;
   specimens: Specimen[];
+  favoriteSpecimenIds: string[];
   npcTalkCounts: Partial<Record<NpcId, number>>;
   metNpcIds: NpcId[];
   flags: GameFlags;
@@ -376,6 +377,11 @@ export type GameCommand =
   | { type: "CATCH_PLAYER_TRAP_ENCOUNTER"; trapId: string; encounterId: string }
   | { type: "CLOSE_PLAYER_TRAP_INSPECTION"; trapId: string }
   | { type: "RECOVER_PLAYER_TRAP"; trapId: string }
+  | {
+      type: "SET_SPECIMEN_FAVORITE";
+      specimenId: string;
+      favorite: boolean;
+    }
   | {
       type: "DISCOVER_TREE_CLUE";
       treeId: string;

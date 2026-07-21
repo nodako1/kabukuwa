@@ -4407,3 +4407,520 @@ button:focus-visible {
     transition: none;
   }
 }
+
+/* Treasured insect case */
+.save-repair-toast {
+  position: absolute;
+  z-index: 35;
+  top: max(76px, calc(env(safe-area-inset-top) + 62px));
+  right: 12px;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 11px;
+  border: 1px solid #d2b86f;
+  border-radius: 12px;
+  background: #fff8db;
+  box-shadow: 0 5px 18px rgb(51 53 37 / 22%);
+  color: #4e533f;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
+.save-repair-toast span {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.save-repair-toast button {
+  min-width: 44px;
+  min-height: 44px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 9px;
+  background: #e7d49c;
+  color: #4b563f;
+  font-size: 9px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.encyclopedia-sheet .book-tabs {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.encyclopedia-sheet .book-tabs button {
+  min-width: 0;
+  padding: 6px 3px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+button.collection-card {
+  width: 100%;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+button.collection-card:focus-visible,
+.specimen-card:focus-visible,
+.favorite-button:focus-visible,
+.collection-back-button:focus-visible,
+.specimen-sort button:focus-visible,
+.collection-load-more:focus-visible {
+  outline: 3px solid #e9a93e;
+  outline-offset: 2px;
+}
+
+.collection-card-copy,
+.specimen-card-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 3px;
+}
+
+.collection-card-copy small,
+.collection-card-copy strong,
+.collection-card-copy span {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.collection-card-copy strong {
+  color: #273d30;
+  font-size: 14px;
+}
+
+.collection-card-copy span {
+  color: #6a746d;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.collection-chevron {
+  flex: 0 0 auto;
+  color: #6f8c67;
+  font-size: 24px;
+  font-weight: 900;
+}
+
+.collection-back-button {
+  min-height: 44px;
+  margin: -4px 0 8px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 11px;
+  background: #eee5d1;
+  color: #3f644c;
+  font-size: 11px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.specimen-page,
+.specimen-detail {
+  min-width: 0;
+}
+
+.collection-page-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+  padding: 12px;
+  border: 1px solid #ded1b4;
+  border-radius: 15px;
+  background: linear-gradient(145deg, #fffdf5, #eef1df);
+}
+
+.collection-page-heading > div {
+  min-width: 0;
+}
+
+.collection-page-heading small,
+.collection-page-heading h3,
+.collection-page-heading p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.collection-page-heading small {
+  color: #91784d;
+  font-size: 9px;
+  font-weight: 900;
+}
+
+.collection-page-heading h3 {
+  margin: 2px 0;
+  color: #2e4a37;
+  font-size: 17px;
+}
+
+.collection-page-heading p {
+  color: #6a746d;
+  font-size: 10px;
+}
+
+.favorite-heading-star {
+  display: grid;
+  width: 54px;
+  height: 54px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  background: #f5d67b;
+  color: #8a5b19;
+  font-size: 25px;
+}
+
+.specimen-sort {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+  margin-bottom: 10px;
+  padding: 4px;
+  border-radius: 12px;
+  background: #ebe2cc;
+}
+
+.specimen-sort button {
+  min-height: 44px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #716858;
+  font-size: 11px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.specimen-sort button.is-active {
+  background: #fffdf4;
+  color: #315b40;
+  box-shadow: 0 2px 7px rgb(58 64 48 / 12%);
+}
+
+.specimen-list {
+  display: grid;
+  gap: 8px;
+}
+
+.specimen-card {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-height: 78px;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #dfd2b7;
+  border-radius: 13px;
+  background: #fffdf5;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.specimen-card.is-favorite {
+  border-color: #d3a640;
+  background: linear-gradient(135deg, #fffdf5, #fff5d2);
+}
+
+.specimen-card-copy small,
+.specimen-card-copy strong,
+.specimen-card-copy span,
+.specimen-card-copy em {
+  overflow-wrap: anywhere;
+}
+
+.specimen-card-copy > small {
+  color: #6a725f;
+  font-size: 9px;
+  font-weight: 900;
+}
+
+.specimen-card-copy strong {
+  color: #294232;
+  font-size: 19px;
+}
+
+.specimen-card-copy strong small {
+  margin-left: 2px;
+  font-size: 9px;
+}
+
+.specimen-card-copy span {
+  color: #697168;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.specimen-card-copy em {
+  color: #96682a;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.favorite-chip {
+  align-self: flex-start;
+  flex: 0 1 auto;
+  padding: 4px 6px;
+  border-radius: 999px;
+  background: #f5d67b;
+  color: #77501b;
+  font-size: 8px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.collection-load-more {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 10px;
+}
+
+.favorite-empty {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 28px 16px;
+  border: 1px dashed #cfbd91;
+  border-radius: 16px;
+  background: #fffaf0;
+  text-align: center;
+}
+
+.favorite-empty > span {
+  color: #c18d2e;
+  font-size: 42px;
+}
+
+.favorite-empty h3,
+.favorite-empty p {
+  margin: 0;
+}
+
+.favorite-empty h3 {
+  color: #36523f;
+  font-size: 16px;
+}
+
+.favorite-empty p {
+  max-width: 290px;
+  color: #6c7169;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.specimen-detail-hero {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding: 17px 12px;
+  border-radius: 17px;
+  background: radial-gradient(circle at 50% 35%, #f4efd7, #dfe9d8);
+  text-align: center;
+}
+
+.specimen-detail-hero small,
+.specimen-detail-hero h3,
+.specimen-detail-hero strong {
+  margin: 0;
+}
+
+.specimen-detail-hero > small {
+  color: #8e754b;
+  font-size: 9px;
+  font-weight: 900;
+}
+
+.specimen-detail-hero h3 {
+  color: #263e30;
+  font-size: 18px;
+  outline: 0;
+}
+
+.specimen-detail-hero > strong {
+  color: #244334;
+  font-size: 30px;
+}
+
+.specimen-detail-hero > strong small {
+  margin-left: 3px;
+  font-size: 11px;
+}
+
+.personal-best,
+.best-difference {
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 900;
+}
+
+.personal-best {
+  background: #f4d57b;
+  color: #774e18;
+}
+
+.best-difference {
+  background: #e7e2d6;
+  color: #716759;
+}
+
+.specimen-detail-list {
+  display: grid;
+  gap: 1px;
+  margin: 0 0 12px;
+  overflow: hidden;
+  border: 1px solid #e0d4ba;
+  border-radius: 13px;
+  background: #e0d4ba;
+}
+
+.specimen-detail-list > div {
+  display: grid;
+  grid-template-columns: minmax(88px, .72fr) minmax(0, 1.4fr);
+  gap: 10px;
+  padding: 9px 10px;
+  background: #fffdf5;
+}
+
+.specimen-detail-list dt,
+.specimen-detail-list dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+.specimen-detail-list dt {
+  color: #88704e;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.specimen-detail-list dd {
+  color: #3e5143;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.favorite-button {
+  display: flex;
+  width: 100%;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 9px 12px;
+  border: 2px solid #c99b38;
+  border-radius: 13px;
+  background: #fffaf0;
+  color: #7b551d;
+  font-size: 11px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.favorite-button > span {
+  font-size: 20px;
+  transition: transform .2s ease;
+}
+
+.favorite-button.is-favorite {
+  background: #f7dc8d;
+}
+
+.favorite-button.is-favorite > span {
+  transform: rotate(-9deg) scale(1.08);
+}
+
+.favorite-note {
+  margin: 7px 3px 0;
+  color: #79736a;
+  font-size: 9px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.result-favorite-button {
+  margin-top: 10px;
+}
+
+@media (max-width: 380px) {
+  .encyclopedia-sheet .sheet-content {
+    padding-inline: 12px;
+  }
+
+  .encyclopedia-sheet .book-tabs button {
+    font-size: 9px;
+  }
+
+  .collection-card,
+  .specimen-card {
+    gap: 8px;
+    padding: 9px;
+  }
+
+  .collection-card .beetle-medallion,
+  .specimen-card .beetle-medallion {
+    width: 48px;
+    height: 48px;
+  }
+
+  .favorite-chip {
+    max-width: 74px;
+    white-space: normal;
+    text-align: center;
+  }
+
+  .specimen-detail-list > div {
+    grid-template-columns: minmax(76px, .65fr) minmax(0, 1.35fr);
+  }
+}
+
+@media (max-width: 300px) {
+  .collection-card,
+  .specimen-card {
+    flex-wrap: wrap;
+  }
+
+  .collection-card .beetle-medallion,
+  .specimen-card .beetle-medallion,
+  .collection-chevron {
+    display: none;
+  }
+
+  .collection-card-copy,
+  .specimen-card-copy {
+    flex-basis: 100%;
+  }
+
+  .favorite-chip {
+    max-width: 100%;
+  }
+
+  .specimen-detail-list > div {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .favorite-button > span,
+  .favorite-button.is-favorite > span {
+    transition: none;
+    transform: none;
+  }
+}

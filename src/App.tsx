@@ -18,15 +18,16 @@ import { TitleScreen } from "./components/TitleScreen";
 import { TreeInspectionView } from "./components/TreeInspectionView";
 import { PlayerTrapInspectionView } from "./components/PlayerTrapInspectionView";
 import { useGame } from "./game/useGame";
-import { loadGame } from "./game/save";
+import { consumeSaveRepairNotice, loadGame } from "./game/save";
 import "./styles.css";
 
 type Panel = "map" | "book" | "people" | "rewards" | null;
 
 const App = () => {
-  const savedAtLaunch = useRef(loadGame()).current;
+  const [savedAtLaunch] = useState(() => loadGame());
   const fieldViewportRef = useRef<FieldViewportHandle>(null);
   const { state, dispatch } = useGame();
+  const [saveRepairNotice, setSaveRepairNotice] = useState(() => consumeSaveRepairNotice());
   const [started, setStarted] = useState(false);
   const [panel, setPanel] = useState<Panel>(null);
   const [trapActionTreeId, setTrapActionTreeId] = useState<string | null>(null);
@@ -37,6 +38,7 @@ const App = () => {
         savedState={savedAtLaunch}
         onContinue={() => setStarted(true)}
         onNewGame={() => {
+          setSaveRepairNotice(null);
           dispatch({ type: "RESET_GAME" });
           setStarted(true);
         }}
@@ -60,6 +62,12 @@ const App = () => {
   return (
     <main className={`game-shell phase-${state.phase} ${inspectionOpen ? "inspection-open" : ""}`}>
       <StatusBar state={state} />
+      {saveRepairNotice && (
+        <div className="save-repair-toast" role="status">
+          <span>{saveRepairNotice}</span>
+          <button type="button" onClick={() => setSaveRepairNotice(null)} aria-label="修復のお知らせを閉じる">閉じる</button>
+        </div>
+      )}
       {playerTrapInspectionOpen ? (
         <PlayerTrapInspectionView state={state} dispatch={dispatch} />
       ) : treeInspectionOpen ? (
@@ -102,7 +110,9 @@ const App = () => {
       )}
 
       {panel === "map" && <MapSheet state={state} onClose={() => setPanel(null)} />}
-      {panel === "book" && <EncyclopediaSheet state={state} onClose={() => setPanel(null)} />}
+      {panel === "book" && (
+        <EncyclopediaSheet state={state} dispatch={dispatch} onClose={() => setPanel(null)} />
+      )}
       {panel === "people" && <PeopleSheet state={state} onClose={() => setPanel(null)} />}
       {panel === "rewards" && (
         <RewardSheet state={state} dispatch={dispatch} onClose={() => setPanel(null)} />
@@ -116,7 +126,12 @@ const App = () => {
         />
       )}
       {state.pendingOutcome && (
-        <OutcomeSheet outcome={state.pendingOutcome} onClose={() => dispatch({ type: "ACKNOWLEDGE_OUTCOME" })} />
+        <OutcomeSheet
+          state={state}
+          outcome={state.pendingOutcome}
+          dispatch={dispatch}
+          onClose={() => dispatch({ type: "ACKNOWLEDGE_OUTCOME" })}
+        />
       )}
       {briefOrTutorialPending && dailyBriefPending && panel === null && (
         <MorningBriefSheet
