@@ -12,6 +12,6 @@ export const useGame = () => {
 
   return {
     state,
-    dispatch: (command: GameCommand) => dispatch(command),
+    dispatch: dispatch as (command: GameCommand) => void,
   };
 };

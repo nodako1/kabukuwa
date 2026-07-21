@@ -1,14 +1,33 @@
 import { describe, expect, it } from "vitest";
+import { getSpawnPoint } from "../data/fields";
 import { insects } from "../data/insects";
 import { locationById } from "../data/locations";
-import type { GameState } from "../types/game";
+import type { FieldId, GameState } from "../types/game";
 import { createInitialGame, gameReducer } from "./engine";
 import { isLocationAvailable, rollEncounter } from "./rules";
 
-const stateAt = (overrides: Partial<GameState>): GameState => ({
-  ...createInitialGame("test-summer"),
-  ...overrides,
-});
+const playerFieldAt = (fieldId: FieldId, x?: number, y?: number): GameState["field"] => {
+  const point = getSpawnPoint(fieldId);
+  return {
+    fieldId,
+    x: x ?? point.x,
+    y: y ?? point.y,
+    facing: point.facing,
+    lastSafeX: x ?? point.x,
+    lastSafeY: y ?? point.y,
+    discoveredFieldIds: [fieldId],
+  };
+};
+
+const stateAt = (overrides: Partial<GameState>): GameState => {
+  const initial = createInitialGame("test-summer");
+  const fieldId = overrides.field?.fieldId ?? overrides.locationId ?? initial.field.fieldId;
+  return {
+    ...initial,
+    ...overrides,
+    field: overrides.field ?? playerFieldAt(fieldId),
+  };
+};
 
 describe("game engine", () => {
   it("starts at grandma's house at 6:00", () => {
@@ -16,7 +35,52 @@ describe("game engine", () => {
     expect(state.day).toBe(1);
     expect(state.timeMinutes).toBe(360);
     expect(state.locationId).toBe("grandma-house");
+    expect(state.field.fieldId).toBe("grandma-house");
     expect(state.phase).toBe("day");
+  });
+
+  it("travels through connected field exits and advances time", () => {
+    let state = stateAt({ field: playerFieldAt("grandma-house", 590, 105) });
+    state = gameReducer(state, { type: "TRAVEL_EXIT", exitId: "to-paddy" });
+    expect(state.field.fieldId).toBe("paddy-road");
+    expect(state.locationId).toBe("grandma-house");
+    expect(state.timeMinutes).toBe(365);
+    expect(state.field.discoveredFieldIds).toContain("paddy-road");
+
+    state = {
+      ...state,
+      field: { ...state.field, x: 450, y: 90, lastSafeX: 450, lastSafeY: 90 },
+    };
+    state = gameReducer(state, { type: "TRAVEL_EXIT", exitId: "to-shrine" });
+    expect(state.field.fieldId).toBe("shrine");
+    expect(state.locationId).toBe("shrine");
+    expect(state.timeMinutes).toBe(370);
+    expect(state.exploration?.locationId).toBe("shrine");
+  });
+
+  it("requires the player to approach a tree before inspecting it", () => {
+    const far = stateAt({
+      timeMinutes: 600,
+      locationId: "mixed-forest",
+      visitCounters: { "mixed-forest": 1 },
+      exploration: {
+        locationId: "mixed-forest",
+        visitIndex: 1,
+        period: "day",
+        searchedSpotIds: [],
+      },
+    });
+    const blocked = gameReducer(far, { type: "INSPECT_SPOT", spotId: "mixed-tree-1" });
+    expect(blocked.timeMinutes).toBe(600);
+    expect(blocked.pendingOutcome?.type).toBe("notice");
+
+    const near = {
+      ...far,
+      field: playerFieldAt("mixed-forest", 190, 350),
+    };
+    const inspected = gameReducer(near, { type: "INSPECT_SPOT", spotId: "mixed-tree-1" });
+    expect(inspected.timeMinutes).toBe(615);
+    expect(inspected.exploration?.searchedSpotIds).toContain("mixed-tree-1");
   });
 
   it("interrupts a remote action at 18:00, then returns home at 18:15", () => {
@@ -90,7 +154,11 @@ describe("game engine", () => {
   });
 
   it("unlocks the secret route after the shrine keeper's third conversation", () => {
-    let state = stateAt({ timeMinutes: 360, locationId: "shrine" });
+    let state = stateAt({
+      timeMinutes: 360,
+      locationId: "shrine",
+      field: playerFieldAt("shrine", 690, 470),
+    });
     state = gameReducer(state, { type: "TALK", npcId: "shrine-keeper" });
     state = gameReducer(state, { type: "ACKNOWLEDGE_OUTCOME" });
     state = gameReducer(state, { type: "TALK", npcId: "shrine-keeper" });
@@ -254,8 +322,74 @@ describe("game engine", () => {
     const unlocked = stateAt({
       timeMinutes: 1065,
       locationId: "shrine",
-      flags: { secretRouteUnlocked: true, pickupCompletedDay: 0, extraHintDay: 0 },
+      flags: {
+        secretRouteUnlocked: true,
+        pickupCompletedDay: 0,
+        extraHintDay: 0,
+        fieldTutorialSeen: true,
+      },
     });
     expect(isLocationAvailable(unlocked, "secret-forest").available).toBe(false);
+  });
+
+  it("starts pickup when time reaches 18:00 on a road field", () => {
+    const road = stateAt({
+      timeMinutes: 1065,
+      locationId: "shrine",
+      field: playerFieldAt("forest-road", 880, 550),
+    });
+    const pickup = gameReducer(road, { type: "REST", minutes: 30 });
+    expect(pickup.phase).toBe("pickup");
+    expect(pickup.timeMinutes).toBe(1080);
+    expect(pickup.field.fieldId).toBe("forest-road");
+  });
+
+  it("closes the road after 18:00 but keeps the backyard available", () => {
+    const evening = stateAt({
+      timeMinutes: 1095,
+      phase: "evening",
+      field: playerFieldAt("grandma-house", 590, 105),
+    });
+    const blocked = gameReducer(evening, { type: "TRAVEL_EXIT", exitId: "to-paddy" });
+    expect(blocked.field.fieldId).toBe("grandma-house");
+    expect(blocked.pendingOutcome?.type).toBe("notice");
+
+    const acknowledged = gameReducer(blocked, { type: "ACKNOWLEDGE_OUTCOME" });
+    const atBackyardExit = {
+      ...acknowledged,
+      field: playerFieldAt("grandma-house", 125, 700),
+    };
+    const backyard = gameReducer(atBackyardExit, { type: "TRAVEL_EXIT", exitId: "to-backyard" });
+    expect(backyard.field.fieldId).toBe("backyard");
+    expect(backyard.phase).toBe("evening");
+  });
+
+  it("lets a 17:55 trip from the house reach the backyard at 18:00", () => {
+    const atExit = stateAt({
+      timeMinutes: 1075,
+      field: playerFieldAt("grandma-house", 125, 700),
+    });
+    const backyard = gameReducer(atExit, { type: "TRAVEL_EXIT", exitId: "to-backyard" });
+    expect(backyard.field.fieldId).toBe("backyard");
+    expect(backyard.timeMinutes).toBe(1080);
+    expect(backyard.phase).toBe("evening");
+  });
+
+  it("opens the secret path only after the clue and from 16:00", () => {
+    const atEntrance = stateAt({
+      timeMinutes: 960,
+      locationId: "shrine",
+      field: playerFieldAt("shrine", 90, 430),
+    });
+    const locked = gameReducer(atEntrance, { type: "TRAVEL_EXIT", exitId: "to-secret" });
+    expect(locked.field.fieldId).toBe("shrine");
+
+    const unlocked = {
+      ...atEntrance,
+      flags: { ...atEntrance.flags, secretRouteUnlocked: true },
+    };
+    const path = gameReducer(unlocked, { type: "TRAVEL_EXIT", exitId: "to-secret" });
+    expect(path.field.fieldId).toBe("secret-path");
+    expect(path.timeMinutes).toBe(965);
   });
 });

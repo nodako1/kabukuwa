@@ -1,4 +1,5 @@
 import { insects } from "../data/insects";
+import { HOME_FIELD_IDS, fieldById, type FieldExit } from "../data/fields";
 import { HOME_LOCATION_IDS, locationById, locations } from "../data/locations";
 import { npcs } from "../data/npcs";
 import type {
@@ -41,7 +42,12 @@ const appearanceFor = (
 
 export const rollEncounter = (state: GameState, hotspot: HotspotDefinition): EncounterRoll | null => {
   const exploration = state.exploration;
-  if (!exploration) return null;
+  const field = fieldById[state.field.fieldId];
+  if (
+    !exploration ||
+    field.locationId !== state.locationId ||
+    !field.hotspots.some((candidate) => candidate.spotId === hotspot.id)
+  ) return null;
   const period = getTimePeriod(state.timeMinutes);
 
   const candidates: WeightedInsect[] = insects
@@ -131,14 +137,54 @@ export const isLocationAvailable = (
   return { available: true };
 };
 
+export const isFieldExitAvailable = (
+  state: GameState,
+  exit: FieldExit,
+): { available: boolean; reason?: string } => {
+  if (state.phase === "day-ended") {
+    return { available: false, reason: "今日はもうおしまいです" };
+  }
+  if (state.phase === "pickup") {
+    return { available: false, reason: "おばあちゃんが迎えに来ています" };
+  }
+
+  const currentIsHome = HOME_FIELD_IDS.includes(state.field.fieldId);
+  const targetIsHome = HOME_FIELD_IDS.includes(exit.toFieldId);
+  if (state.timeMinutes >= EVENING_START && (!currentIsHome || !targetIsHome)) {
+    return { available: false, reason: "18時以降は家と裏庭だけです" };
+  }
+
+  if (exit.requiresSecretRoute) {
+    if (!state.flags.secretRouteUnlocked) {
+      return { available: false, reason: "草が深くて道が見えません" };
+    }
+    if (state.timeMinutes < SECRET_ROUTE_START || state.timeMinutes >= EVENING_START) {
+      return { available: false, reason: "秘密の道は16:00〜18:00だけ現れます" };
+    }
+    if (state.timeMinutes + exit.travelMinutes >= EVENING_START) {
+      return { available: false, reason: "今から進むと18時に間に合いません" };
+    }
+  }
+
+  const targetLocationId = fieldById[exit.toFieldId].locationId;
+  if (targetLocationId && locationById[targetLocationId].daytimeOnly && state.timeMinutes >= EVENING_START) {
+    return { available: false, reason: "もう暗くて入れません" };
+  }
+  return { available: true };
+};
+
 export const visibleLocations = (state: GameState) =>
   locations.filter((location) => !location.secret || state.flags.secretRouteUnlocked);
 
 const scheduleMatchesDay = (days: "all" | "odd" | "even" | undefined, day: number) =>
   days === undefined || days === "all" || (days === "odd" ? day % 2 === 1 : day % 2 === 0);
 
-export const presentNpcs = (state: GameState): NpcDefinition[] =>
-  npcs.filter((npc) =>
+export const presentNpcs = (state: GameState): NpcDefinition[] => {
+  const field = fieldById[state.field.fieldId];
+  if (field.locationId !== state.locationId) return [];
+  const positionedNpcIds = new Set(field.npcPositions.map((position) => position.npcId));
+  return npcs.filter((npc) =>
+    positionedNpcIds.has(npc.id) &&
     npc.schedules.some(
       (schedule) =>
         schedule.locationId === state.locationId &&
@@ -147,6 +193,7 @@ export const presentNpcs = (state: GameState): NpcDefinition[] =>
         scheduleMatchesDay(schedule.days, state.day),
     ),
   );
+};
 
 export const isNpcPresent = (state: GameState, npcId: NpcId): boolean =>
   presentNpcs(state).some((npc) => npc.id === npcId);

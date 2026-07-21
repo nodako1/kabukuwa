@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { BottomNav } from "./components/BottomNav";
-import { SceneViewport } from "./components/SceneViewport";
+import { FieldViewport, type FieldViewportHandle } from "./components/FieldViewport";
 import {
   DaySummarySheet,
   EncyclopediaSheet,
@@ -20,6 +20,7 @@ type Panel = "map" | "book" | "people" | "rewards" | null;
 
 const App = () => {
   const savedAtLaunch = useRef(loadGame()).current;
+  const fieldViewportRef = useRef<FieldViewportHandle>(null);
   const { state, dispatch } = useGame();
   const [started, setStarted] = useState(false);
   const [panel, setPanel] = useState<Panel>(null);
@@ -42,17 +43,36 @@ const App = () => {
   return (
     <main className={`game-shell phase-${state.phase}`}>
       <StatusBar state={state} />
-      <SceneViewport state={state} dispatch={dispatch} onOpenRewards={() => setPanel("rewards")} />
+      <FieldViewport
+        ref={fieldViewportRef}
+        state={state}
+        dispatch={dispatch}
+        onOpenRewards={() => setPanel("rewards")}
+        inputLocked={locked || panel !== null || Boolean(state.pendingOutcome)}
+      />
       <BottomNav
         disabled={locked}
-        onMap={() => setPanel("map")}
-        onBook={() => setPanel("book")}
-        onPeople={() => setPanel("people")}
-        onRest={() => dispatch({ type: "REST", minutes: 30 })}
+        menuDisabled={!state.flags.fieldTutorialSeen}
+        onMap={() => {
+          fieldViewportRef.current?.commitPosition();
+          setPanel("map");
+        }}
+        onBook={() => {
+          fieldViewportRef.current?.commitPosition();
+          setPanel("book");
+        }}
+        onPeople={() => {
+          fieldViewportRef.current?.commitPosition();
+          setPanel("people");
+        }}
+        onRest={() => {
+          fieldViewportRef.current?.commitPosition();
+          dispatch({ type: "REST", minutes: 30 });
+        }}
       />
-      <p className="autosave-note"><span /> 行動のたびに自動保存</p>
+      <p className="autosave-note"><span /> 移動・行動を自動保存</p>
 
-      {panel === "map" && <MapSheet state={state} dispatch={dispatch} onClose={() => setPanel(null)} />}
+      {panel === "map" && <MapSheet state={state} onClose={() => setPanel(null)} />}
       {panel === "book" && <EncyclopediaSheet state={state} onClose={() => setPanel(null)} />}
       {panel === "people" && <PeopleSheet state={state} onClose={() => setPanel(null)} />}
       {panel === "rewards" && (

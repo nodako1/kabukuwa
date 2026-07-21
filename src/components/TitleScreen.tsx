@@ -1,6 +1,6 @@
 import { formatTime } from "../game/clock";
 import type { GameState } from "../types/game";
-import { locationById } from "../data/locations";
+import { fieldById } from "../data/fields";
 
 interface TitleScreenProps {
   savedState: GameState | null;
@@ -34,7 +34,7 @@ export const TitleScreen = ({ savedState, onContinue, onNewGame }: TitleScreenPr
             <strong>つづきから</strong>
             <small>
               {savedState.day}日目 {formatTime(savedState.timeMinutes)}・
-              {locationById[savedState.locationId].mapLabel}
+              {fieldById[savedState.field.fieldId].name}
               {savedState.exploration?.focusedSpotId ? "の探索地点" : ""}
             </small>
           </button>
