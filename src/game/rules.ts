@@ -13,6 +13,7 @@ import type {
   TimePeriod,
 } from "../types/game";
 import { EVENING_START, SECRET_ROUTE_START, getTimePeriod } from "./clock";
+import { naturePresenceMultiplier } from "./daily";
 import { deterministicRange, deterministicRoll } from "./rng";
 
 interface WeightedInsect {
@@ -65,7 +66,9 @@ export const rollEncounter = (state: GameState, hotspot: HotspotDefinition): Enc
     0.72,
     candidates.reduce((total, candidate) => total + candidate.chance, 0),
   );
-  const totalChance = Math.min(0.72, baseChance * boostMultiplier);
+  const natureMultiplier = Math.min(1.2, naturePresenceMultiplier(state, hotspot, period));
+  const natureChance = Math.min(0.72, baseChance * natureMultiplier);
+  const totalChance = Math.min(0.72, natureChance * boostMultiplier);
   const baseKey = [
     state.rngVersion,
     state.worldSeed,
@@ -76,8 +79,8 @@ export const rollEncounter = (state: GameState, hotspot: HotspotDefinition): Enc
     hotspot.id,
   ] as const;
 
-  // The random roll is shared by normal and boosted checks. Raising the threshold can add an
-  // encounter, but can never remove an insect that was already present before the boost.
+  // One roll is shared by the base, nature, and ad thresholds. Each layer may add an encounter,
+  // but can never remove one that already existed in the previous layer.
   const presenceRoll = deterministicRoll(...baseKey, "presence");
   if (presenceRoll >= totalChance) {
     return null;
@@ -103,7 +106,7 @@ export const rollEncounter = (state: GameState, hotspot: HotspotDefinition): Enc
   return {
     insectId: selected.insect.id,
     sizeMm: Math.round(rawSize * 10) / 10,
-    boostAssisted: boostActive && presenceRoll >= baseChance,
+    boostAssisted: boostActive && presenceRoll >= natureChance,
   };
 };
 

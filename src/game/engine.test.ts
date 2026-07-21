@@ -74,13 +74,15 @@ const atTree = (
 };
 
 describe("game engine", () => {
-  it("starts Version 3 at grandma's house at 6:00", () => {
+  it("starts Version 4 at grandma's house at 6:00 with a daily plan", () => {
     const state = createInitialGame("fixed");
-    expect(state.schemaVersion).toBe(3);
+    expect(state.schemaVersion).toBe(4);
     expect(state.timeMinutes).toBe(360);
     expect(state.locationId).toBe("grandma-house");
     expect(state.field.fieldId).toBe("grandma-house");
     expect(Object.keys(state.trapStates)).toEqual(expect.arrayContaining(["backyard-banana", "backyard-light"]));
+    expect(state.dailyPlansByDay["1"]).toMatchObject({ day: 1 });
+    expect(state.observationProgressByDay["1"].visitedFieldIds).toEqual(["grandma-house"]);
   });
 
   it("walks the complete clockwise loop and returns home in 40 minutes", () => {
@@ -126,6 +128,21 @@ describe("game engine", () => {
     expect(gameReducer(state, wrongRange)).toBe(state);
     const wrongFacing = { ...edgeCommand(state, "to-paddy"), facing: "left" as const };
     expect(gameReducer(state, wrongFacing)).toBe(state);
+  });
+
+  it("does not record a remote destination when the 18:00 pickup returns to the origin", () => {
+    const state = stateAt({
+      timeMinutes: 1075,
+      locationId: "shrine",
+      field: playerFieldAt("shrine"),
+    });
+
+    const pickedUp = travel(state, "to-bamboo");
+
+    expect(pickedUp.phase).toBe("pickup");
+    expect(pickedUp.timeMinutes).toBe(1080);
+    expect(pickedUp.field.fieldId).toBe("shrine");
+    expect(pickedUp.observationProgressByDay["1"].visitedFieldIds).not.toContain("bamboo-grove");
   });
 
   it("opens one deterministic inspection session and charges only once", () => {

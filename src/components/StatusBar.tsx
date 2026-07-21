@@ -1,10 +1,16 @@
 import { fieldById } from "../data/fields";
 import { DAY_END, DAY_START, formatTime, getPeriodLabel, getTimePeriod } from "../game/clock";
+import {
+  currentThemeLabel,
+  getCurrentObservationProgress,
+  getObservationProgressText,
+} from "../game/daily";
 import type { GameState } from "../types/game";
 
 export const StatusBar = ({ state }: { state: GameState }) => {
   const progress = ((state.timeMinutes - DAY_START) / (DAY_END - DAY_START)) * 100;
   const boostMinutes = Math.max(0, state.buffs.appearanceBoostUntil - state.timeMinutes);
+  const observation = getCurrentObservationProgress(state);
   return (
     <header className="status-bar">
       <div className="status-main">
@@ -22,6 +28,10 @@ export const StatusBar = ({ state }: { state: GameState }) => {
         <i className="evening-mark" title="18時" />
       </div>
       {boostMinutes > 0 && <div className="boost-chip">出現率アップ 残り{boostMinutes}分</div>}
+      <div className={`observation-chip ${observation.completed ? "is-complete" : ""}`}>
+        <span>{observation.completed ? "✓" : "観察"}</span>
+        <span>{currentThemeLabel(state)} · {getObservationProgressText(state)}</span>
+      </div>
     </header>
   );
 };

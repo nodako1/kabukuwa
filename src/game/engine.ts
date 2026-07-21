@@ -2,6 +2,7 @@ import { insectById } from "../data/insects";
 import { HOME_FIELD_IDS, fieldById, getSpawnPoint } from "../data/fields";
 import { locationById } from "../data/locations";
 import { npcById } from "../data/npcs";
+import { getRumorText } from "../data/dailyContent";
 import { initialTrapStates, treeById } from "../data/trees";
 import type {
   AdRewardKind,
@@ -39,6 +40,17 @@ import {
   isInspectionComplete,
   isInspectionPointUnlocked,
 } from "./inspection";
+import {
+  createInitialDailyRecords,
+  finalizeObservationJournal,
+  getCurrentDailyPlan,
+  recordFieldVisit,
+  recordInspectionPoint,
+  recordInspectionStarted,
+  recordNpcTalk,
+  recordSpecimenCapture,
+  startDailyObservation,
+} from "./daily";
 
 const withRevision = (state: GameState): GameState => ({
   ...state,
@@ -67,8 +79,8 @@ const fieldStateAt = (
 };
 
 export const createInitialGame = (seed = `summer-${Date.now().toString(36)}`): GameState => ({
-  schemaVersion: 3,
-  contentVersion: 3,
+  schemaVersion: 4,
+  contentVersion: 4,
   rngVersion: 1,
   worldSeed: seed,
   revision: 0,
@@ -95,6 +107,7 @@ export const createInitialGame = (seed = `summer-${Date.now().toString(36)}`): G
   discoveredClueSessionIds: [],
   caughtEncounterIds: [],
   trapStates: initialTrapStates(),
+  ...createInitialDailyRecords(1, seed),
 });
 
 const advanceAfterAction = (
@@ -134,7 +147,9 @@ const advanceAfterAction = (
         pendingBoundaryEvent: "day-ended",
       };
     }
-    return syncExplorationPeriod({ ...next, timeMinutes: DAY_END, phase: "day-ended" });
+    return finalizeObservationJournal(
+      syncExplorationPeriod({ ...next, timeMinutes: DAY_END, phase: "day-ended" }),
+    );
   }
 
   const actionStartedAwayFromHome = !HOME_FIELD_IDS.includes(actionOriginState.field.fieldId);
@@ -242,7 +257,15 @@ const travelEdge = (
           }
         : undefined,
   };
-  return withRevision(advanceAfterAction(arrived, exit.travelMinutes, undefined, actionOriginState));
+  const advanced = advanceAfterAction(arrived, exit.travelMinutes, undefined, actionOriginState);
+  if (advanced.field.fieldId !== exit.toFieldId) return withRevision(advanced);
+
+  const progressed = recordFieldVisit(
+    arrived,
+    exit.toFieldId,
+    Math.min(DAY_END, state.timeMinutes + exit.travelMinutes),
+  );
+  return withRevision(advanceAfterAction(progressed, exit.travelMinutes, undefined, actionOriginState));
 };
 
 const openTreeInspection = (state: GameState, treeId: string): GameState => {
@@ -293,7 +316,12 @@ const openTreeInspection = (state: GameState, treeId: string): GameState => {
     inspectionSessions: { ...state.inspectionSessions, [session.id]: session },
     exploration,
   };
-  return withRevision(advanceAfterAction(started, 15, undefined, state));
+  const progressed = recordInspectionStarted(
+    started,
+    session,
+    state.discoveredClueSessionIds.includes(session.id),
+  );
+  return withRevision(advanceAfterAction(progressed, 15, undefined, state));
 };
 
 const viewInspectionPoint = (state: GameState, pointId: string): GameState => {
@@ -322,11 +350,12 @@ const viewInspectionPoint = (state: GameState, pointId: string): GameState => {
         searchedSpotIds: [...state.exploration.searchedSpotIds, tree.legacySpotId],
       }
     : state.exploration;
-  return withRevision({
+  const viewed: GameState = {
     ...state,
     exploration,
     inspectionSessions: { ...state.inspectionSessions, [sessionId]: nextSession },
-  });
+  };
+  return withRevision(recordInspectionPoint(viewed, nextSession, pointId));
 };
 
 const catchInspectionEncounter = (state: GameState, encounterId: string): GameState => {
@@ -361,7 +390,7 @@ const catchInspectionEncounter = (state: GameState, encounterId: string): GameSt
     ...session,
     catchableEncounter: { ...encounter, caught: true },
   };
-  return withRevision({
+  const caught: GameState = {
     ...state,
     specimens: [...state.specimens, specimen],
     caughtEncounterIds: [...state.caughtEncounterIds, encounterId],
@@ -372,7 +401,8 @@ const catchInspectionEncounter = (state: GameState, encounterId: string): GameSt
       isPersonalBest: specimen.sizeMm > previousBest,
       isFirstCatch: previousBest === 0,
     },
-  });
+  };
+  return withRevision(recordSpecimenCapture(caught, specimen.id));
 };
 
 const closeTreeInspection = (state: GameState): GameState => {
@@ -395,6 +425,7 @@ const closeTreeInspection = (state: GameState): GameState => {
     next = { ...next, phase: "pickup", timeMinutes: EVENING_START, pendingBoundaryEvent: undefined };
   } else if (state.pendingBoundaryEvent === "day-ended") {
     next = { ...next, phase: "day-ended", timeMinutes: DAY_END, pendingBoundaryEvent: undefined };
+    next = finalizeObservationJournal(next);
   }
   return withRevision(next);
 };
@@ -442,29 +473,40 @@ const talk = (state: GameState, npcId: Parameters<typeof isNpcPresent>[1]): Game
   const npc = npcById[npcId];
   const previousCount = state.npcTalkCounts[npcId] ?? 0;
   const baseText = npc.dialogues[Math.min(previousCount, npc.dialogues.length - 1)];
-  const text =
-    npcId === "grandma" && state.flags.extraHintDay === state.day
-      ? `${baseText}\n\n追加ヒント：${getGrandmaHint(state)}`
-      : baseText;
+  const plan = getCurrentDailyPlan(state);
+  const hasDailyRumor = plan?.rumorNpcId === npcId && !state.heardRumorDays.includes(state.day);
+  const rumorText = hasDailyRumor ? getRumorText(plan.rumorId) : undefined;
+  const textParts = [baseText];
+  if (npcId === "grandma" && state.flags.extraHintDay === state.day) {
+    textParts.push(`追加ヒント：${getGrandmaHint(state)}`);
+  }
+  if (rumorText) textParts.push(`今日の噂：${rumorText}`);
+  const text = textParts.join("\n\n");
   const nextCount = previousCount + 1;
   const unlockedSecretRoute = npcId === "shrine-keeper" && nextCount >= 3 && !state.flags.secretRouteUnlocked;
   const metNpcIds = state.metNpcIds.includes(npcId) ? state.metNpcIds : [...state.metNpcIds, npcId];
 
-  return withRevision(
-    advanceAfterAction(
-      {
-        ...state,
+  const talked = recordNpcTalk(
+    {
+      ...state,
         npcTalkCounts: { ...state.npcTalkCounts, [npcId]: nextCount },
         metNpcIds,
+        heardRumorDays: rumorText
+          ? [...state.heardRumorDays, state.day]
+          : state.heardRumorDays,
         flags: {
           ...state.flags,
           secretRouteUnlocked: state.flags.secretRouteUnlocked || unlockedSecretRoute,
         },
-      },
-      15,
-      { type: "dialogue", npcId, text, unlockedSecretRoute },
-    ),
+    },
+    npcId,
+    Math.min(DAY_END, state.timeMinutes + 15),
   );
+  return withRevision(advanceAfterAction(
+    talked,
+    15,
+    { type: "dialogue", npcId, text, unlockedSecretRoute },
+  ));
 };
 
 const applyAdReward = (state: GameState, reward: AdRewardKind): GameState => {
@@ -594,6 +636,13 @@ export const gameReducer = (state: GameState, command: GameCommand): GameState =
       return state.flags.fieldTutorialSeen
         ? state
         : withRevision({ ...state, flags: { ...state.flags, fieldTutorialSeen: true } });
+    case "DISMISS_MORNING_BRIEF":
+      return state.morningBriefSeenDays.includes(state.day)
+        ? state
+        : withRevision({
+            ...state,
+            morningBriefSeenDays: [...state.morningBriefSeenDays, state.day],
+          });
     case "REST":
       if (state.phase === "pickup" || state.phase === "day-ended") return state;
       return withRevision(advanceAfterAction(state, command.minutes));
@@ -618,7 +667,7 @@ export const gameReducer = (state: GameState, command: GameCommand): GameState =
     }
     case "START_NEXT_DAY":
       if (state.phase !== "day-ended") return state;
-      return withRevision({
+      return withRevision(startDailyObservation({
         ...state,
         day: state.day + 1,
         timeMinutes: DAY_START,
@@ -633,7 +682,7 @@ export const gameReducer = (state: GameState, command: GameCommand): GameState =
         discoveredClueSessionIds: [],
         caughtEncounterIds: [],
         pendingBoundaryEvent: undefined,
-      });
+      }, state.day + 1));
     case "RESET_GAME":
       return createInitialGame(command.seed);
     default:
