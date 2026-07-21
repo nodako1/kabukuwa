@@ -90,6 +90,7 @@ interface FieldViewportProps {
   dispatch: (command: GameCommand) => void;
   onOpenRewards: () => void;
   inputLocked: boolean;
+  suppressTutorial?: boolean;
 }
 
 export interface FieldViewportHandle {
@@ -108,6 +109,7 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
   dispatch,
   onOpenRewards,
   inputLocked,
+  suppressTutorial = false,
 }, ref) {
   const field = fieldById[state.field.fieldId];
   const period = getTimePeriod(state.timeMinutes);
@@ -660,7 +662,7 @@ export const FieldViewport = forwardRef<FieldViewportHandle, FieldViewportProps>
 
       {transitioning && <div className="field-transition-curtain" aria-live="polite"><span>{transitionLabel}</span></div>}
 
-      {!state.flags.fieldTutorialSeen && (
+      {!state.flags.fieldTutorialSeen && !suppressTutorial && (
         <div className="field-tutorial" role="dialog" aria-modal="true" aria-labelledby="field-tutorial-title">
           <div>
             <small>新しい虫取りの始まり</small>

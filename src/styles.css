@@ -400,6 +400,37 @@ button:focus-visible {
   font-weight: 800;
 }
 
+.observation-chip {
+  display: flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  color: #6d6046;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.observation-chip span:first-child {
+  min-width: 34px;
+  padding: 3px 6px;
+  border-radius: 20px;
+  background: #eee2c4;
+  color: #665535;
+  text-align: center;
+}
+
+.observation-chip span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.observation-chip.is-complete span:first-child {
+  background: #dcebcf;
+  color: #315a37;
+}
+
 /* Scene */
 .scene-viewport {
   position: relative;
@@ -3536,5 +3567,543 @@ button:focus-visible {
   .field-player[data-moving="true"] .player-head,
   .field-player[data-moving="true"] .player-hat {
     animation: none;
+  }
+}
+
+/* Daily nature and observation notebook */
+.morning-brief-sheet .sheet-content {
+  display: grid;
+  gap: 12px;
+}
+
+.morning-nature {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid #dfd0aa;
+  border-radius: 18px 8px 18px 8px;
+  background: linear-gradient(145deg, #fff8df, #edf0d6);
+}
+
+.morning-nature > span {
+  display: grid;
+  width: 58px;
+  height: 58px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 2px solid #fff9e8;
+  border-radius: 50%;
+  background: #507d55;
+  color: #fff9e8;
+  font-family: serif;
+  font-size: 23px;
+  font-weight: 800;
+  box-shadow: 0 3px 0 #31573b;
+}
+
+.morning-nature small,
+.morning-nature h3,
+.morning-nature p,
+.morning-theme small,
+.morning-theme strong,
+.morning-theme p {
+  display: block;
+  margin: 0;
+}
+
+.morning-nature small,
+.morning-theme small {
+  color: #8a6d41;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .08em;
+}
+
+.morning-nature h3 {
+  margin: 3px 0 5px;
+  color: #28553b;
+  font-size: 18px;
+}
+
+.morning-nature p,
+.morning-theme p {
+  color: #5d685e;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.morning-theme {
+  padding: 14px;
+  border-radius: 14px;
+  background: #f0e5ca;
+}
+
+.morning-theme strong {
+  margin: 5px 0 6px;
+  color: #3f4e43;
+  font-size: 14px;
+}
+
+.morning-rumor-note {
+  padding: 9px 11px;
+  border-left: 4px solid #be734b;
+  color: #685a48;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.book-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin-bottom: 13px;
+  padding: 4px;
+  border-radius: 13px;
+  background: #e9dfc7;
+}
+
+.book-tabs button {
+  min-height: 44px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #6e6657;
+  font-size: 11px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.book-tabs button.is-active {
+  background: #fffdf4;
+  color: #28563c;
+  box-shadow: 0 2px 7px rgb(58 64 48 / 12%);
+}
+
+.observation-notebook,
+.journal-entry-list {
+  display: grid;
+  gap: 10px;
+}
+
+.journal-current {
+  padding: 14px;
+  border: 1px solid #d9c99f;
+  border-radius: 5px 17px 7px 15px;
+  background: #fffaf0;
+  box-shadow: 0 4px 12px rgb(76 63 38 / 8%);
+}
+
+.journal-current.is-complete {
+  border-color: #8da374;
+  background: #f5f6df;
+}
+
+.journal-day-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.journal-day-row small,
+.journal-day-row strong,
+.journal-current > p,
+.journal-current > small {
+  display: block;
+  margin: 0;
+}
+
+.journal-day-row small,
+.journal-current > small {
+  color: #8d7652;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.journal-day-row strong {
+  margin-top: 3px;
+  color: #28543b;
+  font-size: 15px;
+}
+
+.journal-day-row > span {
+  display: grid;
+  width: 39px;
+  height: 39px;
+  place-items: center;
+  border-radius: 50%;
+  background: #567b53;
+  color: #fff8e8;
+  font-family: serif;
+  font-weight: 900;
+}
+
+.journal-current > p {
+  margin: 11px 0 8px;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.55;
+}
+
+.journal-current > .journal-nature-text {
+  margin-bottom: 5px;
+  color: #626b60;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.journal-current > .journal-theme-text {
+  margin-top: 0;
+}
+
+.journal-theme-text small {
+  display: block;
+  margin-bottom: 2px;
+  color: #8d7652;
+  font-size: 8px;
+  font-weight: 900;
+}
+
+.journal-progress {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  margin-bottom: 8px;
+  padding: 6px 9px;
+  border-radius: 9px;
+  background: #eee4cd;
+  color: #5d5f50;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.journal-progress i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #bf8f54;
+}
+
+.journal-progress i.is-complete {
+  background: #4d8052;
+  box-shadow: 0 0 0 4px rgb(77 128 82 / 14%);
+}
+
+.journal-empty {
+  margin: 0;
+  padding: 11px;
+  border-radius: 10px;
+  background: #eee6d3;
+  color: #777064;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.journal-entry {
+  overflow: hidden;
+  border: 1px solid #ded1b3;
+  border-radius: 14px;
+  background: #fffdf5;
+}
+
+.journal-entry summary {
+  display: grid;
+  min-height: 68px;
+  grid-template-columns: 46px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.journal-entry summary::-webkit-details-marker {
+  display: none;
+}
+
+.journal-entry summary small,
+.journal-entry summary strong {
+  display: block;
+}
+
+.journal-entry summary small {
+  color: #927957;
+  font-size: 8px;
+}
+
+.journal-entry summary strong {
+  overflow: hidden;
+  margin-top: 2px;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.journal-entry summary b {
+  color: #5e725e;
+  font-size: 8px;
+}
+
+.journal-stamp {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 2px dashed #b7a885;
+  border-radius: 50%;
+  color: #998868;
+  font-family: serif;
+  font-weight: 900;
+}
+
+.journal-stamp.is-earned {
+  border: 3px double #b65b48;
+  color: #a74738;
+  transform: rotate(-7deg);
+}
+
+.journal-entry-body {
+  padding: 0 13px 14px;
+  border-top: 1px dashed #dfd2b5;
+}
+
+.journal-theme-line {
+  margin: 12px 0 9px;
+  color: #3e5245;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.5;
+}
+
+.journal-theme-line small {
+  display: block;
+  color: #90754f;
+  font-size: 8px;
+}
+
+.journal-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.journal-facts span {
+  padding: 4px 7px;
+  border-radius: 20px;
+  background: #e8eddc;
+  color: #52644f;
+  font-size: 8px;
+  font-weight: 800;
+}
+
+.journal-detail-list {
+  display: grid;
+  gap: 1px;
+  overflow: hidden;
+  margin: 10px 0;
+  border: 1px solid #e0d5bb;
+  border-radius: 10px;
+  background: #e0d5bb;
+}
+
+.journal-detail-list > div {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 8px;
+  padding: 7px 9px;
+  background: #fffaf0;
+}
+
+.journal-detail-list dt,
+.journal-detail-list dd {
+  margin: 0;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
+.journal-detail-list dt {
+  color: #8a704e;
+  font-weight: 900;
+}
+
+.journal-detail-list dd {
+  min-width: 0;
+  color: #4d574d;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.journal-entry blockquote {
+  margin: 10px 0;
+  padding: 9px 10px;
+  border-left: 3px solid #c07a50;
+  background: #f6edd9;
+  color: #5e5548;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.journal-entry blockquote small {
+  display: block;
+  margin-bottom: 3px;
+  color: #94714c;
+  font-size: 8px;
+  font-weight: 900;
+}
+
+.journal-diary {
+  padding: 10px;
+  background: repeating-linear-gradient(#fffdf5 0 25px, #e9dec4 26px);
+}
+
+.journal-diary p {
+  margin: 0;
+  color: #494e48;
+  font-family: "Yu Mincho", "Hiragino Mincho ProN", serif;
+  font-size: 11px;
+  line-height: 26px;
+}
+
+.day-summary {
+  max-height: min(94dvh, 820px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.observation-summary {
+  display: grid;
+  gap: 8px;
+  margin: -3px 0 14px;
+  padding: 11px;
+  border: 1px solid #e0d0ae;
+  border-radius: 14px;
+  background: #fffaf0;
+  text-align: left;
+}
+
+.summary-nature,
+.summary-theme-result {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.summary-nature > span,
+.summary-theme-result > span {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  background: #e5ead5;
+  color: #3f6744;
+  font-family: serif;
+  font-weight: 900;
+}
+
+.summary-nature p,
+.summary-theme-result p,
+.summary-nature small,
+.summary-nature strong,
+.summary-theme-result small,
+.summary-theme-result strong {
+  display: block;
+  margin: 0;
+}
+
+.summary-nature small,
+.summary-theme-result small {
+  color: #89724f;
+  font-size: 8px;
+}
+
+.summary-nature strong,
+.summary-theme-result strong {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.observation-summary dl {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 0;
+}
+
+.observation-summary dl > div {
+  padding: 7px;
+  border-radius: 8px;
+  background: #f0e8d5;
+}
+
+.observation-summary dt {
+  color: #8c7655;
+  font-size: 7px;
+  font-weight: 800;
+}
+
+.observation-summary dd {
+  margin: 2px 0 0;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.summary-theme-result.is-complete > span {
+  border: 2px double #ad4d3d;
+  background: #fff4d8;
+  color: #a74738;
+  transform: rotate(-6deg);
+}
+
+.summary-diary {
+  margin: 0;
+  padding-top: 7px;
+  border-top: 1px dashed #d8c7a2;
+  color: #55564f;
+  font-family: "Yu Mincho", "Hiragino Mincho ProN", serif;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+@media (max-height: 700px) {
+  .morning-nature {
+    padding: 12px;
+  }
+
+  .morning-nature > span {
+    width: 48px;
+    height: 48px;
+  }
+
+  .morning-theme {
+    padding: 11px;
+  }
+
+  .day-summary {
+    padding-top: 10px;
+  }
+
+  .day-summary .summary-sun {
+    display: none;
+  }
+
+  .day-summary > h2 {
+    margin-bottom: 9px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .journal-stamp,
+  .summary-theme-result > span,
+  .observation-chip,
+  .morning-nature > span {
+    animation: none;
+    transition: none;
   }
 }

@@ -20,11 +20,11 @@ export const BottomNav = ({
       <i className="nav-symbol map-symbol" aria-hidden="true" />
       <span>地図</span>
     </button>
-    <button onClick={onBook} disabled={menuDisabled}>
+    <button onClick={onBook} disabled={disabled || menuDisabled}>
       <i className="nav-symbol book-symbol" aria-hidden="true" />
       <span>虫図鑑</span>
     </button>
-    <button onClick={onPeople} disabled={menuDisabled}>
+    <button onClick={onPeople} disabled={disabled || menuDisabled}>
       <i className="nav-symbol people-symbol" aria-hidden="true" />
       <span>ひとびと</span>
     </button>

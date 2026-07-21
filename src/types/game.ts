@@ -46,6 +46,65 @@ export type NpcId =
   | "rival"
   | "candy-shopkeeper";
 
+export type DailyNatureId =
+  | "lively-sap"
+  | "quiet-roots"
+  | "forest-evening"
+  | "sweet-breeze"
+  | "moths-at-light"
+  | "still-summer";
+
+export type ObservationThemeId =
+  | "inspect-three-trees"
+  | "look-high-and-low"
+  | "trust-your-eyes"
+  | "visit-two-woods"
+  | "listen-to-someone"
+  | "check-a-trap"
+  | "complete-one-tree"
+  | "walk-the-loop";
+
+export interface DailyPlan {
+  day: number;
+  natureId: DailyNatureId;
+  themeId: ObservationThemeId;
+  rumorNpcId: NpcId;
+  rumorId: string;
+}
+
+export interface ObservationProgress {
+  day: number;
+  inspectedTreeIds: string[];
+  examinedPointIds: string[];
+  visitedFieldIds: FieldId[];
+  talkedNpcIds: NpcId[];
+  ambientInsectIds: AmbientInsectId[];
+  capturedSpecimenIds: string[];
+  inspectedWithoutClueTreeIds: string[];
+  checkedTrapTreeIds: string[];
+  completed: boolean;
+  completedAtMinutes?: number;
+}
+
+export interface ObservationJournalEntry {
+  day: number;
+  natureId: DailyNatureId;
+  themeId: ObservationThemeId;
+  themeCompleted: boolean;
+  rumorNpcId?: NpcId;
+  rumorId?: string;
+  inspectedTreeIds: string[];
+  examinedPointIds: string[];
+  visitedFieldIds: FieldId[];
+  talkedNpcIds: NpcId[];
+  ambientInsectIds: AmbientInsectId[];
+  capturedSpecimenIds: string[];
+  largestSpecimenId?: string;
+  firstCatchInsectIds: InsectId[];
+  stampId?: string;
+  diaryLines: string[];
+}
+
 export interface HotspotDefinition {
   id: string;
   label: string;
@@ -218,8 +277,8 @@ export interface GameBuffs {
 }
 
 export interface GameState {
-  schemaVersion: 3;
-  contentVersion: 3;
+  schemaVersion: 4;
+  contentVersion: 4;
   rngVersion: 1;
   worldSeed: string;
   revision: number;
@@ -240,6 +299,11 @@ export interface GameState {
   discoveredClueSessionIds: string[];
   caughtEncounterIds: string[];
   trapStates: Record<string, TrapState>;
+  dailyPlansByDay: Record<string, DailyPlan>;
+  observationProgressByDay: Record<string, ObservationProgress>;
+  observationJournalByDay: Record<string, ObservationJournalEntry>;
+  heardRumorDays: number[];
+  morningBriefSeenDays: number[];
   pendingBoundaryEvent?: "pickup" | "day-ended";
   pendingOutcome?: Outcome;
 }
@@ -275,6 +339,7 @@ export type GameCommand =
     }
   | { type: "RESET_PLAYER_POSITION" }
   | { type: "DISMISS_FIELD_TUTORIAL" }
+  | { type: "DISMISS_MORNING_BRIEF" }
   | { type: "REST"; minutes: 30 | 60 }
   | { type: "APPLY_AD_REWARD"; reward: AdRewardKind }
   | { type: "ACKNOWLEDGE_OUTCOME" }

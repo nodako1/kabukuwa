@@ -1,11 +1,21 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { fieldById } from "../data/fields";
+import {
+  dailyNatureById,
+  getRumorText,
+  observationThemeById,
+} from "../data/dailyContent";
 import { insects, insectById } from "../data/insects";
 import { locationById } from "../data/locations";
 import { npcs, npcById } from "../data/npcs";
 import { treeById } from "../data/trees";
 import { formatTime } from "../game/clock";
 import { getOutcomeTitle } from "../game/engine";
+import {
+  getCurrentDailyPlan,
+  getCurrentObservationProgress,
+  getObservationProgressText,
+} from "../game/daily";
 import { getGrandmaHint, isLocationAvailable } from "../game/rules";
 import { MockAdRewardProvider } from "../ports/AdRewardProvider";
 import type { AdRewardKind, FieldId, GameCommand, GameState, Outcome } from "../types/game";
@@ -18,31 +28,46 @@ interface SheetProps {
   className?: string;
 }
 
-const Sheet = ({ title, eyebrow, onClose, children, className = "" }: SheetProps) => {
-  const titleId = useId();
-  const sheetRef = useRef<HTMLElement>(null);
+const focusableSelector = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "summary",
+  '[tabindex]:not([tabindex="-1"])',
+].join(", ");
 
+const useModalFocusTrap = (
+  dialogRef: React.RefObject<HTMLElement | null>,
+  onEscape?: () => void,
+  dialogIsRoot = false,
+) => {
   useEffect(() => {
-    const sheet = sheetRef.current;
-    if (!sheet) return;
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+
     const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const backdrop = sheet.parentElement;
-    const host = backdrop?.parentElement;
+    const modalRoot = dialogIsRoot ? dialog : dialog.parentElement;
+    const host = modalRoot?.parentElement;
     const backgroundElements = host
-      ? Array.from(host.children).filter((element) => element !== backdrop) as HTMLElement[]
+      ? Array.from(host.children).filter((element) => element !== modalRoot) as HTMLElement[]
       : [];
     const previousInert = backgroundElements.map((element) => element.inert);
     backgroundElements.forEach((element) => { element.inert = true; });
 
-    const focusableSelector =
-      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-    const focusable = () => Array.from(sheet.querySelectorAll<HTMLElement>(focusableSelector));
-    focusable()[0]?.focus();
+    const focusable = () => Array.from(dialog.querySelectorAll<HTMLElement>(focusableSelector))
+      .filter((element) => !element.closest("[hidden]") && !element.closest("[inert]"));
+    if (dialog.hasAttribute("tabindex")) {
+      dialog.focus({ preventScroll: true });
+    } else {
+      focusable()[0]?.focus();
+    }
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && onEscape) {
         event.preventDefault();
-        onClose();
+        onEscape();
         return;
       }
       if (event.key !== "Tab") return;
@@ -61,13 +86,20 @@ const Sheet = ({ title, eyebrow, onClose, children, className = "" }: SheetProps
         first.focus();
       }
     };
-    sheet.addEventListener("keydown", handleKeyDown);
+
+    dialog.addEventListener("keydown", handleKeyDown);
     return () => {
-      sheet.removeEventListener("keydown", handleKeyDown);
+      dialog.removeEventListener("keydown", handleKeyDown);
       backgroundElements.forEach((element, index) => { element.inert = previousInert[index]; });
       previouslyFocused?.focus();
     };
-  }, [onClose]);
+  }, [dialogIsRoot, dialogRef, onEscape]);
+};
+
+const Sheet = ({ title, eyebrow, onClose, children, className = "" }: SheetProps) => {
+  const titleId = useId();
+  const sheetRef = useRef<HTMLElement>(null);
+  useModalFocusTrap(sheetRef, onClose);
 
   return (
     <div className="sheet-backdrop" role="presentation" onMouseDown={onClose}>
@@ -167,29 +199,247 @@ export const MapSheet = ({
   );
 };
 
-export const EncyclopediaSheet = ({ state, onClose }: { state: GameState; onClose: () => void }) => (
-  <Sheet title="カブクワ図鑑" eyebrow={`${new Set(state.specimens.map((item) => item.insectId)).size} / ${insects.length}種`} onClose={onClose}>
-    <div className="card-list">
-      {insects.map((insect) => {
-        const catches = state.specimens.filter((specimen) => specimen.insectId === insect.id);
-        const best = catches.reduce((value, specimen) => Math.max(value, specimen.sizeMm), 0);
-        const found = catches.length > 0;
-        return (
-          <article className={`collection-card ${found ? "is-found" : "is-unknown"}`} key={insect.id}>
-            <div className="beetle-medallion" aria-hidden="true">
-              <i className={insect.family === "カブトムシ" ? "rhino-mark" : "stag-mark"} />
-            </div>
-            <div>
-              <small>レア度 {"●".repeat(insect.rarity)}{"○".repeat(5 - insect.rarity)}</small>
-              <h3>{found ? insect.name : "まだ見つけていない"}</h3>
-              <p>{found ? `${catches.length}匹 · 最大 ${best.toFixed(1)}mm` : insect.hint}</p>
-            </div>
-          </article>
-        );
-      })}
-    </div>
-  </Sheet>
+export const MorningBriefSheet = ({
+  state,
+  onClose,
+}: {
+  state: GameState;
+  onClose: () => void;
+}) => {
+  const plan = getCurrentDailyPlan(state);
+  if (!plan) return null;
+  const nature = dailyNatureById[plan.natureId];
+  const theme = observationThemeById[plan.themeId];
+  return (
+    <Sheet
+      title="今日の自然のようす"
+      eyebrow={`夏休み ${state.day}日目 · 朝`}
+      onClose={onClose}
+      className="morning-brief-sheet"
+    >
+      <div className={`morning-nature nature-${nature.id}`}>
+        <span aria-hidden="true">{nature.icon}</span>
+        <div>
+          <small>きょうの自然</small>
+          <h3>{nature.name}</h3>
+          <p>{nature.morningText}</p>
+        </div>
+      </div>
+      <div className="morning-theme">
+        <small>やってみてもいい観察</small>
+        <strong>{theme.label}</strong>
+        <p>できなくても大丈夫。今日は自由に虫取りを楽しもう。</p>
+      </div>
+      <div className="morning-rumor-note">村の誰かが、今日の噂を知っているかもしれない。</div>
+      <button className="primary-button" onClick={onClose}>虫取りへ出かける</button>
+    </Sheet>
+  );
+};
+
+const InsectCollection = ({ state }: { state: GameState }) => (
+  <div className="card-list">
+    {insects.map((insect) => {
+      const catches = state.specimens.filter((specimen) => specimen.insectId === insect.id);
+      const best = catches.reduce((value, specimen) => Math.max(value, specimen.sizeMm), 0);
+      const found = catches.length > 0;
+      return (
+        <article className={`collection-card ${found ? "is-found" : "is-unknown"}`} key={insect.id}>
+          <div className="beetle-medallion" aria-hidden="true">
+            <i className={insect.family === "カブトムシ" ? "rhino-mark" : "stag-mark"} />
+          </div>
+          <div>
+            <small>レア度 {"●".repeat(insect.rarity)}{"○".repeat(5 - insect.rarity)}</small>
+            <h3>{found ? insect.name : "まだ見つけていない"}</h3>
+            <p>{found ? `${catches.length}匹 · 最大 ${best.toFixed(1)}mm` : insect.hint}</p>
+          </div>
+        </article>
+      );
+    })}
+  </div>
 );
+
+const ObservationNotebook = ({ state }: { state: GameState }) => {
+  const plan = getCurrentDailyPlan(state);
+  const progress = getCurrentObservationProgress(state);
+  const entries = Object.values(state.observationJournalByDay).sort((left, right) => right.day - left.day);
+  const currentFinalized = Boolean(state.observationJournalByDay[String(state.day)]);
+  return (
+    <div className="observation-notebook">
+      {!currentFinalized && plan && (
+        <article className={`journal-current ${progress.completed ? "is-complete" : ""}`}>
+          <div className="journal-day-row">
+            <div>
+              <small>記録中 · 夏休み {state.day}日目</small>
+              <strong>{dailyNatureById[plan.natureId].name}</strong>
+            </div>
+            <span aria-hidden="true">{dailyNatureById[plan.natureId].icon}</span>
+          </div>
+          <p className="journal-nature-text">{dailyNatureById[plan.natureId].morningText}</p>
+          <p className="journal-theme-text">
+            <small>やってみてもいい観察</small>
+            {observationThemeById[plan.themeId].label}
+          </p>
+          <div className="journal-progress" aria-label={`観察テーマの進み具合 ${getObservationProgressText(state)}`}>
+            <i className={progress.completed ? "is-complete" : ""} />
+            <span>{getObservationProgressText(state)}</span>
+          </div>
+          <small>噂：{state.heardRumorDays.includes(state.day) ? "今日の噂を聞いた" : "まだ聞いていない"}</small>
+        </article>
+      )}
+      {entries.length === 0 && currentFinalized === false && (
+        <p className="journal-empty">今日の行動は、夜になるとここへ日記として残ります。</p>
+      )}
+      <div className="journal-entry-list">
+        {entries.map((entry) => {
+          const nature = dailyNatureById[entry.natureId];
+          const theme = observationThemeById[entry.themeId];
+          const largestSpecimen = entry.largestSpecimenId
+            ? state.specimens.find((specimen) => specimen.id === entry.largestSpecimenId)
+            : undefined;
+          const firstCatchNames = entry.firstCatchInsectIds
+            .map((insectId) => insectById[insectId].name)
+            .join("・");
+          const examinedPointIds = new Set(entry.examinedPointIds);
+          const pointKindNames = Array.from(new Set(Object.values(treeById)
+            .flatMap((tree) => tree.inspectionPoints)
+            .filter((point) => examinedPointIds.has(point.id))
+            .map((point) => ({
+              sap: "樹液",
+              "bark-crack": "幹の割れ目",
+              root: "根元",
+              "banana-trap": "バナナトラップ",
+              "light-trap": "ライトトラップ",
+            })[point.sceneKind])))
+            .join("・");
+          const talkedNpcNames = entry.talkedNpcIds
+            .map((npcId) => npcById[npcId].name)
+            .join("・");
+          const visitedFieldNames = entry.visitedFieldIds
+            .map((fieldId) => fieldById[fieldId].name)
+            .join(" → ");
+          return (
+            <details className="journal-entry" key={entry.day} open={entry.day === state.day}>
+              <summary>
+                <span className={`journal-stamp ${entry.stampId ? "is-earned" : ""}`} aria-hidden="true">
+                  {entry.stampId ? theme.stamp : nature.icon}
+                </span>
+                <span>
+                  <small>夏休み {entry.day}日目</small>
+                  <strong>{nature.name}</strong>
+                </span>
+                <b>{entry.themeCompleted ? "観察できた" : "自由に過ごした"}</b>
+              </summary>
+              <div className="journal-entry-body">
+                <p className="journal-theme-line"><small>観察テーマ</small>{theme.label}</p>
+                <div className="journal-facts">
+                  <span>木 {entry.inspectedTreeIds.length}本</span>
+                  <span>捕獲 {entry.capturedSpecimenIds.length}匹</span>
+                  <span>歩いた場所 {entry.visitedFieldIds.length}か所</span>
+                </div>
+                <dl className="journal-detail-list">
+                  <div>
+                    <dt>最大個体</dt>
+                    <dd>{largestSpecimen
+                      ? `${insectById[largestSpecimen.insectId].name} ${largestSpecimen.sizeMm.toFixed(1)}mm`
+                      : "なし"}</dd>
+                  </div>
+                  <div><dt>初捕獲種</dt><dd>{firstCatchNames || "なし"}</dd></div>
+                  <div><dt>見たところ</dt><dd>{pointKindNames || "まだ見ていない"}</dd></div>
+                  <div><dt>話した人</dt><dd>{talkedNpcNames || "なし"}</dd></div>
+                  <div><dt>歩いた場所</dt><dd>{visitedFieldNames || "なし"}</dd></div>
+                </dl>
+                {entry.rumorId && entry.rumorNpcId && (
+                  <blockquote>
+                    <small>{npcById[entry.rumorNpcId].name}から聞いた噂</small>
+                    {getRumorText(entry.rumorId)}
+                  </blockquote>
+                )}
+                <div className="journal-diary">
+                  {entry.diaryLines.map((line, index) => <p key={`${index}-${line}`}>{line}</p>)}
+                </div>
+              </div>
+            </details>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
+export const EncyclopediaSheet = ({ state, onClose }: { state: GameState; onClose: () => void }) => {
+  const [tab, setTab] = useState<"insects" | "journal">("insects");
+  const tabsId = useId();
+  const tabRefs = useRef<Record<"insects" | "journal", HTMLButtonElement | null>>({
+    insects: null,
+    journal: null,
+  });
+  const tabIds = ["insects", "journal"] as const;
+  const handleTabKeyDown = (
+    event: React.KeyboardEvent<HTMLButtonElement>,
+    currentTab: (typeof tabIds)[number],
+  ) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const currentIndex = tabIds.indexOf(currentTab);
+    const offset = event.key === "ArrowRight" ? 1 : -1;
+    const nextTab = tabIds[(currentIndex + offset + tabIds.length) % tabIds.length];
+    setTab(nextTab);
+    tabRefs.current[nextTab]?.focus();
+  };
+  return (
+    <Sheet
+      title="カブクワ図鑑"
+      eyebrow={tab === "insects"
+        ? `${new Set(state.specimens.map((item) => item.insectId)).size} / ${insects.length}種`
+        : `夏休み ${state.day}日目`}
+      onClose={onClose}
+      className="encyclopedia-sheet"
+    >
+      <div className="book-tabs" role="tablist" aria-label="図鑑のページ">
+        <button
+          ref={(element) => { tabRefs.current.insects = element; }}
+          id={`${tabsId}-insects-tab`}
+          role="tab"
+          aria-controls={`${tabsId}-insects-panel`}
+          aria-selected={tab === "insects"}
+          tabIndex={tab === "insects" ? 0 : -1}
+          className={tab === "insects" ? "is-active" : ""}
+          onClick={() => setTab("insects")}
+          onKeyDown={(event) => handleTabKeyDown(event, "insects")}
+        >虫図鑑</button>
+        <button
+          ref={(element) => { tabRefs.current.journal = element; }}
+          id={`${tabsId}-journal-tab`}
+          role="tab"
+          aria-controls={`${tabsId}-journal-panel`}
+          aria-selected={tab === "journal"}
+          tabIndex={tab === "journal" ? 0 : -1}
+          className={tab === "journal" ? "is-active" : ""}
+          onClick={() => setTab("journal")}
+          onKeyDown={(event) => handleTabKeyDown(event, "journal")}
+        >夏休み観察ノート</button>
+      </div>
+      <div
+        id={`${tabsId}-insects-panel`}
+        role="tabpanel"
+        aria-labelledby={`${tabsId}-insects-tab`}
+        tabIndex={0}
+        hidden={tab !== "insects"}
+      >
+        <InsectCollection state={state} />
+      </div>
+      <div
+        id={`${tabsId}-journal-panel`}
+        role="tabpanel"
+        aria-labelledby={`${tabsId}-journal-tab`}
+        tabIndex={0}
+        hidden={tab !== "journal"}
+      >
+        <ObservationNotebook state={state} />
+      </div>
+    </Sheet>
+  );
+};
 
 export const PeopleSheet = ({ state, onClose }: { state: GameState; onClose: () => void }) => (
   <Sheet title="ひとびとの記録" eyebrow={`${state.metNpcIds.length} / ${npcs.length}人`} onClose={onClose}>
@@ -347,7 +597,7 @@ export const OutcomeSheet = ({ outcome, onClose }: { outcome: Outcome; onClose: 
       {outcome.type === "dialogue" && (
         <div className="dialogue-result">
           <small>{npcById[outcome.npcId].role}</small>
-          {outcome.text.split("\n").map((line) => <p key={line}>{line}</p>)}
+          {outcome.text.split(/\n{2,}/).map((line, index) => <p key={`${index}-${line}`}>{line}</p>)}
           {outcome.unlockedSecretRoute && (
             <div className="unlock-note">秘密の道の手がかりを見つけた。16時を過ぎたら地図を見よう。</div>
           )}
@@ -359,17 +609,27 @@ export const OutcomeSheet = ({ outcome, onClose }: { outcome: Outcome; onClose: 
   );
 };
 
-export const PickupCutscene = ({ onComplete }: { onComplete: () => void }) => (
-  <div className="cutscene pickup-cutscene" role="dialog" aria-modal="true" aria-labelledby="pickup-title">
-    <div className="cutscene-sky" aria-hidden="true"><i /><i /><i /></div>
-    <div className="pickup-dialogue">
-      <p>遠くから、聞き慣れた声がする。</p>
-      <h2 id="pickup-title">「おーい！ 迎えに来たよ！」</h2>
-      <span>おばあちゃんが迎えに来てくれた！</span>
-      <button className="primary-button" onClick={onComplete} autoFocus>おばあちゃんの家へ</button>
+export const PickupCutscene = ({ onComplete }: { onComplete: () => void }) => {
+  const cutsceneRef = useRef<HTMLDivElement>(null);
+  useModalFocusTrap(cutsceneRef, undefined, true);
+  return (
+    <div
+      ref={cutsceneRef}
+      className="cutscene pickup-cutscene"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="pickup-title"
+    >
+      <div className="cutscene-sky" aria-hidden="true"><i /><i /><i /></div>
+      <div className="pickup-dialogue">
+        <p>遠くから、聞き慣れた声がする。</p>
+        <h2 id="pickup-title">「おーい！ 迎えに来たよ！」</h2>
+        <span>おばあちゃんが迎えに来てくれた！</span>
+        <button className="primary-button" onClick={onComplete}>おばあちゃんの家へ</button>
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 export const DaySummarySheet = ({
   state,
@@ -378,13 +638,38 @@ export const DaySummarySheet = ({
   state: GameState;
   onNextDay: () => void;
 }) => {
+  const summaryRef = useRef<HTMLElement>(null);
+  useModalFocusTrap(summaryRef);
   const today = state.specimens.filter((specimen) => specimen.day === state.day);
   const kinds = new Set(today.map((specimen) => specimen.insectId));
   const largest = today.reduce<null | (typeof today)[number]>((best, specimen) =>
     !best || specimen.sizeMm > best.sizeMm ? specimen : best, null);
+  const journal = state.observationJournalByDay[String(state.day)];
+  const nature = journal ? dailyNatureById[journal.natureId] : undefined;
+  const theme = journal ? observationThemeById[journal.themeId] : undefined;
+  const pointKinds = journal
+    ? new Set(Object.values(treeById).flatMap((tree) => tree.inspectionPoints)
+        .filter((point) => journal.examinedPointIds.includes(point.id))
+        .map((point) => point.sceneKind))
+    : new Set();
+  const pointKindLabel = pointKinds.size > 0
+    ? [
+        pointKinds.has("sap") ? "樹液" : "",
+        pointKinds.has("bark-crack") ? "割れ目" : "",
+        pointKinds.has("root") ? "根元" : "",
+        pointKinds.has("banana-trap") || pointKinds.has("light-trap") ? "仕掛け" : "",
+      ].filter(Boolean).join("・")
+    : "まだ見ていない";
   return (
     <div className="sheet-backdrop persistent">
-      <section className="bottom-sheet day-summary" role="dialog" aria-modal="true" aria-labelledby="summary-title">
+      <section
+        ref={summaryRef}
+        className="bottom-sheet day-summary"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="summary-title"
+        tabIndex={-1}
+      >
         <div className="sheet-handle" />
         <div className="summary-sun" aria-hidden="true" />
         <p>20:00 · 今日の採集はおしまい</p>
@@ -400,7 +685,27 @@ export const DaySummarySheet = ({
             <><small>今日のひとこと</small><strong>何も見つからない日も、夏休みの思い出。</strong></>
           )}
         </div>
-        <button className="primary-button" onClick={onNextDay} autoFocus>次の日の朝へ</button>
+        {journal && nature && theme && (
+          <div className="observation-summary">
+            <div className="summary-nature">
+              <span aria-hidden="true">{nature.icon}</span>
+              <p><small>今日の自然</small><strong>{nature.name}</strong></p>
+            </div>
+            <dl>
+              <div><dt>調べた木</dt><dd>{journal.inspectedTreeIds.length}本</dd></div>
+              <div><dt>見たところ</dt><dd>{pointKindLabel}</dd></div>
+            </dl>
+            <div className={`summary-theme-result ${journal.themeCompleted ? "is-complete" : ""}`}>
+              <span aria-hidden="true">{journal.themeCompleted ? theme.stamp : "葉"}</span>
+              <p>
+                <small>{journal.themeCompleted ? "観察スタンプ" : "今日の観察"}</small>
+                <strong>{journal.themeCompleted ? theme.label : "今日は自由に過ごした"}</strong>
+              </p>
+            </div>
+            <p className="summary-diary">{journal.diaryLines[0]}</p>
+          </div>
+        )}
+        <button className="primary-button" onClick={onNextDay}>次の日の朝へ</button>
       </section>
     </div>
   );

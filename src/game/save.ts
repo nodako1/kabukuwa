@@ -6,10 +6,12 @@ import { getTimePeriod } from "./clock";
 import { getFieldCollisionRects, isPositionWalkable } from "./field";
 import { commitInspectionSession, generateInspectionSession } from "./inspection";
 import { isFieldExitAvailable } from "./rules";
+import { finalizeObservationJournal, migrateDailyRecords } from "./daily";
 
 export const SAVE_KEY = "kabukuwa.save.current";
 export const BACKUP_KEY = "kabukuwa.save.backup";
-export const MIGRATION_BACKUP_KEY = "kabukuwa.save.pre-v3";
+export const MIGRATION_BACKUP_KEY = "kabukuwa.save.pre-v4";
+export const LEGACY_MIGRATION_BACKUP_KEY = "kabukuwa.save.pre-v3";
 
 export interface StorageLike {
   getItem(key: string): string | null;
@@ -32,6 +34,24 @@ const npcIds = ["grandma", "shrine-keeper", "professor", "rival", "candy-shopkee
 const insectIds = ["japanese-rhino", "saw-stag", "miyama-stag", "giant-stag", "atlas-beetle"] as const;
 const periodIds = ["morning", "day", "evening", "night"] as const;
 const ambientIds = ["green-bottle", "black-bottle", "butterfly", "moth", "ant", "gnat", "pillbug"] as const;
+const dailyNatureIds = [
+  "lively-sap",
+  "quiet-roots",
+  "forest-evening",
+  "sweet-breeze",
+  "moths-at-light",
+  "still-summer",
+] as const;
+const observationThemeIds = [
+  "inspect-three-trees",
+  "look-high-and-low",
+  "trust-your-eyes",
+  "visit-two-woods",
+  "listen-to-someone",
+  "check-a-trap",
+  "complete-one-tree",
+  "walk-the-loop",
+] as const;
 
 const specimenSchema = z.object({
   id: z.string(),
@@ -163,6 +183,47 @@ const inspectionSessionSchema = z.object({
   }),
 });
 
+const dailyPlanSchema = z.object({
+  day: z.number().int().positive(),
+  natureId: z.enum(dailyNatureIds),
+  themeId: z.enum(observationThemeIds),
+  rumorNpcId: z.enum(npcIds),
+  rumorId: z.string(),
+});
+
+const observationProgressSchema = z.object({
+  day: z.number().int().positive(),
+  inspectedTreeIds: z.array(z.string()),
+  examinedPointIds: z.array(z.string()),
+  visitedFieldIds: z.array(z.enum(fieldIds)),
+  talkedNpcIds: z.array(z.enum(npcIds)),
+  ambientInsectIds: z.array(z.enum(ambientIds)),
+  capturedSpecimenIds: z.array(z.string()),
+  inspectedWithoutClueTreeIds: z.array(z.string()),
+  checkedTrapTreeIds: z.array(z.string()),
+  completed: z.boolean(),
+  completedAtMinutes: z.number().int().min(360).max(1200).optional(),
+});
+
+const observationJournalSchema = z.object({
+  day: z.number().int().positive(),
+  natureId: z.enum(dailyNatureIds),
+  themeId: z.enum(observationThemeIds),
+  themeCompleted: z.boolean(),
+  rumorNpcId: z.enum(npcIds).optional(),
+  rumorId: z.string().optional(),
+  inspectedTreeIds: z.array(z.string()),
+  examinedPointIds: z.array(z.string()),
+  visitedFieldIds: z.array(z.enum(fieldIds)),
+  talkedNpcIds: z.array(z.enum(npcIds)),
+  ambientInsectIds: z.array(z.enum(ambientIds)),
+  capturedSpecimenIds: z.array(z.string()),
+  largestSpecimenId: z.string().optional(),
+  firstCatchInsectIds: z.array(z.enum(insectIds)),
+  stampId: z.string().optional(),
+  diaryLines: z.array(z.string()).min(1),
+});
+
 const semanticRefinement = (state: GameState, context: z.RefinementCtx) => {
   const field = fieldById[state.field.fieldId];
   const isHome = state.field.fieldId === "grandma-house" || state.field.fieldId === "backyard";
@@ -227,7 +288,7 @@ const semanticRefinement = (state: GameState, context: z.RefinementCtx) => {
   }
 };
 
-export const gameStateSchema = z.object({
+export const version3GameStateSchema = z.object({
   schemaVersion: z.literal(3),
   contentVersion: z.literal(3),
   ...commonStateShape,
@@ -242,10 +303,109 @@ export const gameStateSchema = z.object({
     installed: z.boolean(),
   })),
   pendingBoundaryEvent: z.enum(["pickup", "day-ended"]).optional(),
-}).superRefine((state, context) => semanticRefinement(state as GameState, context));
+}).superRefine((state, context) => semanticRefinement(state as unknown as GameState, context));
+
+const dailySemanticRefinement = (state: GameState, context: z.RefinementCtx) => {
+  const invalid = (message: string) => context.addIssue({ code: "custom", message });
+  const validateDayRecord = (
+    records: Record<string, { day: number }>,
+    label: string,
+  ) => {
+    for (const [key, value] of Object.entries(records)) {
+      if (String(value.day) !== key || value.day > state.day) invalid(`${label} day key is invalid`);
+    }
+  };
+  validateDayRecord(state.dailyPlansByDay, "daily plan");
+  validateDayRecord(state.observationProgressByDay, "observation progress");
+  validateDayRecord(state.observationJournalByDay, "observation journal");
+  if (!state.dailyPlansByDay[String(state.day)]) invalid("current daily plan is required");
+  if (!state.observationProgressByDay[String(state.day)]) invalid("current observation progress is required");
+  if (state.phase !== "day-ended" && state.observationJournalByDay[String(state.day)]) {
+    invalid("current observation journal cannot be finalized before day end");
+  }
+  if (state.phase === "day-ended" && !state.observationJournalByDay[String(state.day)]) {
+    invalid("day-ended state requires a finalized observation journal");
+  }
+  for (const plan of Object.values(state.dailyPlansByDay)) {
+    if (plan.rumorId !== `${plan.rumorNpcId}:${plan.natureId}`) {
+      invalid("daily rumor identity is inconsistent");
+    }
+  }
+  const specimenIds = new Set(state.specimens.map((specimen) => specimen.id));
+  for (const progress of Object.values(state.observationProgressByDay)) {
+    const arrays = [
+      progress.inspectedTreeIds,
+      progress.examinedPointIds,
+      progress.visitedFieldIds,
+      progress.talkedNpcIds,
+      progress.ambientInsectIds,
+      progress.capturedSpecimenIds,
+      progress.inspectedWithoutClueTreeIds,
+      progress.checkedTrapTreeIds,
+    ];
+    if (arrays.some((items) => new Set(items).size !== items.length)) {
+      invalid("observation progress contains duplicate ids");
+    }
+    if (progress.capturedSpecimenIds.some((id) => !specimenIds.has(id))) {
+      invalid("observation progress references an unknown specimen");
+    }
+  }
+  for (const journal of Object.values(state.observationJournalByDay)) {
+    const plan = state.dailyPlansByDay[String(journal.day)];
+    if (journal.capturedSpecimenIds.some((id) => !specimenIds.has(id))) {
+      invalid("observation journal references an unknown specimen");
+    }
+    if (journal.largestSpecimenId && !journal.capturedSpecimenIds.includes(journal.largestSpecimenId)) {
+      invalid("observation journal largest specimen is inconsistent");
+    }
+    if (Boolean(journal.rumorNpcId) !== Boolean(journal.rumorId)) {
+      invalid("observation journal rumor fields must be paired");
+    }
+    if (
+      journal.rumorNpcId &&
+      (!plan || journal.rumorNpcId !== plan.rumorNpcId || journal.rumorId !== plan.rumorId)
+    ) {
+      invalid("observation journal rumor identity is inconsistent");
+    }
+  }
+  for (const [days, label] of [
+    [state.heardRumorDays, "heard rumor days"],
+    [state.morningBriefSeenDays, "morning brief days"],
+  ] as const) {
+    if (new Set(days).size !== days.length || days.some((day) => day > state.day)) {
+      invalid(`${label} contains duplicate or future days`);
+    }
+  }
+};
+
+export const gameStateSchema = z.object({
+  schemaVersion: z.literal(4),
+  contentVersion: z.literal(4),
+  ...commonStateShape,
+  field: playerFieldSchema,
+  flags: currentFlagsSchema,
+  inspectionSessions: z.record(z.string(), inspectionSessionSchema),
+  activeInspectionSessionId: z.string().optional(),
+  discoveredClueSessionIds: z.array(z.string()),
+  caughtEncounterIds: z.array(z.string()),
+  trapStates: z.record(z.string(), z.object({
+    kind: z.enum(["banana", "light"]),
+    installed: z.boolean(),
+  })),
+  dailyPlansByDay: z.record(z.string(), dailyPlanSchema),
+  observationProgressByDay: z.record(z.string(), observationProgressSchema),
+  observationJournalByDay: z.record(z.string(), observationJournalSchema),
+  heardRumorDays: z.array(z.number().int().positive()),
+  morningBriefSeenDays: z.array(z.number().int().positive()),
+  pendingBoundaryEvent: z.enum(["pickup", "day-ended"]).optional(),
+}).superRefine((state, context) => {
+  semanticRefinement(state as GameState, context);
+  dailySemanticRefinement(state as GameState, context);
+});
 
 type LegacyGameState = z.infer<typeof legacyGameStateSchema>;
 type Version2GameState = z.infer<typeof version2GameStateSchema>;
+type Version3GameState = z.infer<typeof version3GameStateSchema>;
 
 const nearestSafePoint = (
   fieldId: FieldId,
@@ -343,7 +503,7 @@ const repairPlayerPosition = (state: GameState): GameState => {
 };
 
 export const migrateVersion2GameState = (legacy: Version2GameState): GameState => {
-  const base = repairPlayerPosition({
+  const version3Like = {
     ...legacy,
     schemaVersion: 3,
     contentVersion: 3,
@@ -363,9 +523,15 @@ export const migrateVersion2GameState = (legacy: Version2GameState): GameState =
     caughtEncounterIds: [],
     trapStates: initialTrapStates(),
     pendingBoundaryEvent: undefined,
+  };
+  const base = repairPlayerPosition({
+    ...version3Like,
+    schemaVersion: 4,
+    contentVersion: 4,
+    ...migrateDailyRecords(version3Like as unknown as Parameters<typeof migrateDailyRecords>[0]),
   } as GameState);
 
-  if (!base.exploration) return base;
+  if (!base.exploration) return base.phase === "day-ended" ? finalizeObservationJournal(base) : base;
   const uniqueSpotIds = [...new Set(base.exploration.searchedSpotIds)];
   const sessions: Record<string, TreeInspectionSession> = {};
   for (const spotId of uniqueSpotIds) {
@@ -383,17 +549,33 @@ export const migrateVersion2GameState = (legacy: Version2GameState): GameState =
       catchableEncounter: undefined,
     };
   }
-  return {
+  const migrated: GameState = {
     ...base,
     exploration: { ...base.exploration, searchedSpotIds: uniqueSpotIds },
     inspectionSessions: sessions,
   };
+  return migrated.phase === "day-ended" ? finalizeObservationJournal(migrated) : migrated;
+};
+
+export const migrateVersion3GameState = (legacy: Version3GameState): GameState => {
+  const migrated = repairPlayerPosition({
+    ...legacy,
+    schemaVersion: 4,
+    contentVersion: 4,
+    ...migrateDailyRecords(legacy as unknown as Parameters<typeof migrateDailyRecords>[0]),
+  } as GameState);
+  return migrated.phase === "day-ended" ? finalizeObservationJournal(migrated) : migrated;
 };
 
 const saveEnvelopeSchema = z.object({
-  schemaVersion: z.literal(3),
+  schemaVersion: z.literal(4),
   savedAt: z.string(),
   state: gameStateSchema,
+});
+const version3SaveEnvelopeSchema = z.object({
+  schemaVersion: z.literal(3),
+  savedAt: z.string(),
+  state: version3GameStateSchema,
 });
 const version2SaveEnvelopeSchema = z.object({
   schemaVersion: z.literal(2),
@@ -426,6 +608,12 @@ const parseSavedState = (raw: string | null): ParsedState | null => {
     const parsed: unknown = JSON.parse(raw);
     const current = saveEnvelopeSchema.safeParse(parsed);
     if (current.success) return { state: repairPlayerPosition(current.data.state as GameState), migrated: false };
+    const version3 = version3SaveEnvelopeSchema.safeParse(parsed);
+    if (version3.success) {
+      const migrated = migrateVersion3GameState(version3.data.state);
+      const checked = gameStateSchema.safeParse(migrated);
+      return checked.success ? { state: repairPlayerPosition(checked.data as GameState), migrated: true } : null;
+    }
     const version2 = version2SaveEnvelopeSchema.safeParse(parsed);
     if (version2.success) {
       const migrated = migrateVersion2GameState(version2.data.state);
@@ -479,7 +667,7 @@ export const saveGame = (state: GameState, storage = browserStorage()): void => 
     if (current) storage.setItem(BACKUP_KEY, current);
     storage.setItem(
       SAVE_KEY,
-      JSON.stringify({ schemaVersion: 3, savedAt: new Date().toISOString(), state }),
+      JSON.stringify({ schemaVersion: 4, savedAt: new Date().toISOString(), state }),
     );
   } catch {
     // Saving is best-effort. Storage restrictions or quota errors must not stop the game.
@@ -492,6 +680,7 @@ export const deleteSave = (storage = browserStorage()): void => {
     storage.removeItem(SAVE_KEY);
     storage.removeItem(BACKUP_KEY);
     storage.removeItem(MIGRATION_BACKUP_KEY);
+    storage.removeItem(LEGACY_MIGRATION_BACKUP_KEY);
   } catch {
     // Ignore browser storage restrictions.
   }

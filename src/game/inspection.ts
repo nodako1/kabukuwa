@@ -12,6 +12,7 @@ import type {
   TreeInspectionSession,
 } from "../types/game";
 import { DAY_END, EVENING_START, getTimePeriod } from "./clock";
+import { ambientNatureBonus, inspectionPointNatureWeight } from "./daily";
 import { deterministicRoll } from "./rng";
 import { rollEncounter } from "./rules";
 
@@ -46,7 +47,7 @@ const ambientForPoint = (
 ): AmbientPlacement[] => {
   const pool = ambientPool(point.sceneKind, period);
   const baseCount = point.sceneKind === "bark-crack" ? 1 : 2;
-  const count = baseCount + Math.floor(deterministicRoll(
+  const count = baseCount + ambientNatureBonus(state, point.sceneKind, period) + Math.floor(deterministicRoll(
     state.rngVersion,
     state.worldSeed,
     sessionId,
@@ -74,18 +75,21 @@ const ambientForPoint = (
 };
 
 const pointWeight = (
+  state: GameState,
   insectId: InsectId,
   point: TreeInspectionPoint,
   period: TreeInspectionSession["period"],
 ): number => {
-  if (point.sceneKind === "banana-trap" || point.sceneKind === "light-trap") return 8;
-  if (insectId === "giant-stag") return point.sceneKind === "bark-crack" ? 7 : point.sceneKind === "root" ? 2 : 1;
-  if (insectId === "japanese-rhino") {
-    if (period === "day") return point.sceneKind === "root" ? 6 : 2;
-    return point.sceneKind === "sap" ? 6 : 2;
+  let base = point.sceneKind === "sap" || point.sceneKind === "bark-crack" ? 4 : 2;
+  if (point.sceneKind === "banana-trap" || point.sceneKind === "light-trap") base = 8;
+  else if (insectId === "giant-stag") base = point.sceneKind === "bark-crack" ? 7 : point.sceneKind === "root" ? 2 : 1;
+  else if (insectId === "japanese-rhino") {
+    base = period === "day"
+      ? point.sceneKind === "root" ? 6 : 2
+      : point.sceneKind === "sap" ? 6 : 2;
   }
-  if (insectId === "miyama-stag") return point.sceneKind === "root" ? 4 : 3;
-  return point.sceneKind === "sap" || point.sceneKind === "bark-crack" ? 4 : 2;
+  else if (insectId === "miyama-stag") base = point.sceneKind === "root" ? 4 : 3;
+  return base * inspectionPointNatureWeight(state, point.sceneKind, period);
 };
 
 const selectEncounterPoint = (
@@ -98,7 +102,7 @@ const selectEncounterPoint = (
   const active = tree.inspectionPoints.filter(
     (point) => !point.activePeriods || point.activePeriods.includes(period),
   );
-  const weighted = active.map((point) => ({ point, weight: pointWeight(insectId, point, period) }));
+  const weighted = active.map((point) => ({ point, weight: pointWeight(state, insectId, point, period) }));
   const total = weighted.reduce((sum, item) => sum + item.weight, 0);
   let roll = deterministicRoll(state.worldSeed, sessionId, insectId, "encounter-point") * total;
   return weighted.find((item) => {

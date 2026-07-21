@@ -5,6 +5,7 @@ import {
   DaySummarySheet,
   EncyclopediaSheet,
   MapSheet,
+  MorningBriefSheet,
   OutcomeSheet,
   PeopleSheet,
   PickupCutscene,
@@ -41,6 +42,11 @@ const App = () => {
 
   const inspectionOpen = Boolean(state.activeInspectionSessionId);
   const locked = state.phase === "pickup" || state.phase === "day-ended";
+  const morningBriefPending =
+    !state.morningBriefSeenDays.includes(state.day) &&
+    !inspectionOpen &&
+    !state.pendingOutcome &&
+    !locked;
 
   return (
     <main className={`game-shell phase-${state.phase} ${inspectionOpen ? "inspection-open" : ""}`}>
@@ -53,7 +59,8 @@ const App = () => {
           state={state}
           dispatch={dispatch}
           onOpenRewards={() => setPanel("rewards")}
-          inputLocked={locked || panel !== null || Boolean(state.pendingOutcome)}
+          inputLocked={locked || panel !== null || Boolean(state.pendingOutcome) || morningBriefPending}
+          suppressTutorial={morningBriefPending}
         />
       )}
       {!inspectionOpen && (
@@ -90,6 +97,12 @@ const App = () => {
       )}
       {state.pendingOutcome && (
         <OutcomeSheet outcome={state.pendingOutcome} onClose={() => dispatch({ type: "ACKNOWLEDGE_OUTCOME" })} />
+      )}
+      {morningBriefPending && panel === null && (
+        <MorningBriefSheet
+          state={state}
+          onClose={() => dispatch({ type: "DISMISS_MORNING_BRIEF" })}
+        />
       )}
       {!state.pendingOutcome && !inspectionOpen && state.phase === "pickup" && (
         <PickupCutscene onComplete={() => dispatch({ type: "COMPLETE_PICKUP" })} />
