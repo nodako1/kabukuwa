@@ -1903,6 +1903,657 @@ button:focus-visible {
   }
 }
 
+/* Loop-world edges and tree clues */
+.game-shell.inspection-open {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.field-boundary {
+  position: absolute;
+  z-index: 1800;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 13px 15px, #315f3d 0 13px, transparent 14px),
+    radial-gradient(circle at 31px 10px, #477b49 0 16px, transparent 17px),
+    #315f3d;
+  background-size: 47px 37px;
+  filter: drop-shadow(0 3px 3px rgb(24 48 30 / 25%));
+}
+
+.field-boundary-left,
+.field-boundary-right {
+  background-size: 38px 49px;
+}
+
+.field-exit.field-exit-top { transform: translate(-50%, -8%); }
+.field-exit.field-exit-bottom { transform: translate(-50%, -92%); }
+.field-exit.field-exit-left { transform: translate(-8%, -50%); }
+.field-exit.field-exit-right { transform: translate(-92%, -50%); }
+
+.field-exit.is-open i {
+  border-color: #6a4a2c;
+  background: #f3dea5;
+}
+
+.field-exit.is-closed i {
+  width: 72px;
+  border: 0;
+  background:
+    radial-gradient(circle at 12px 17px, #315f3d 0 14px, transparent 15px),
+    radial-gradient(circle at 37px 13px, #477b49 0 17px, transparent 18px),
+    #315f3d;
+}
+
+.tree-marker-stack {
+  position: absolute;
+  z-index: 8;
+  top: -8px;
+  right: 3px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.tree-marker-stack b {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  place-items: center;
+  border: 2px solid #fff7df;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 1000;
+  line-height: 1;
+  box-shadow: 0 3px 7px rgb(25 42 30 / 28%);
+}
+
+.tree-clue-marker {
+  background: #c74837;
+  animation: clue-pulse 1.8s ease-in-out infinite;
+}
+
+.tree-trap-marker {
+  background: #747b78;
+  transform: rotate(45deg);
+}
+
+.tree-trap-marker.is-active {
+  background: #d39e33;
+}
+
+.tree-trap-marker.trap-light.is-active {
+  background: #6b8ea0;
+}
+
+.tree-checked-marker {
+  background: #486c4d;
+}
+
+@keyframes clue-pulse {
+  0%, 78%, 100% { transform: translateY(0); }
+  84% { transform: translateY(-4px); }
+  90% { transform: translateY(0); }
+  95% { transform: translateY(-2px); }
+}
+
+.field-transition-curtain {
+  position: absolute;
+  z-index: 5000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgb(16 33 25 / 94%);
+  color: #fff6d8;
+  font-size: 15px;
+  font-weight: 900;
+  letter-spacing: .08em;
+  pointer-events: all;
+  animation: field-transition .47s ease both;
+}
+
+.field-transition-curtain span {
+  padding: 8px 13px;
+  border: 1px solid rgb(255 255 255 / 18%);
+  border-radius: 20px;
+  background: rgb(255 255 255 / 7%);
+}
+
+@keyframes field-transition {
+  0% { opacity: 0; }
+  42%, 58% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* Close-up tree inspection */
+.tree-inspection {
+  position: relative;
+  display: grid;
+  min-height: 0;
+  grid-template-rows: auto minmax(260px, 1fr) auto;
+  overflow: hidden;
+  color: #f9f1d9;
+  background: #172f24;
+  user-select: none;
+}
+
+.tree-inspection::after {
+  position: absolute;
+  z-index: 90;
+  inset: 0;
+  background: #13271f;
+  content: "";
+  pointer-events: none;
+  animation: inspection-enter .22s ease both;
+}
+
+@keyframes inspection-enter {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+.inspection-header {
+  z-index: 20;
+  display: flex;
+  min-height: 66px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid rgb(255 255 255 / 12%);
+  background: #1d3d2e;
+  box-shadow: 0 5px 16px rgb(0 0 0 / 25%);
+}
+
+.inspection-header small,
+.inspection-header h2 {
+  display: block;
+  margin: 0;
+}
+
+.inspection-header small {
+  color: #d7c798;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .09em;
+}
+
+.inspection-header h2 {
+  margin-top: 2px;
+  font-size: 18px;
+}
+
+.inspection-header time {
+  padding: 6px 9px;
+  border-radius: 10px;
+  background: rgb(255 255 255 / 9%);
+  color: #f4dc92;
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.inspection-scene {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  isolation: isolate;
+  background: #4e3524;
+  touch-action: manipulation;
+}
+
+.inspection-bark {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  overflow: hidden;
+  background:
+    linear-gradient(92deg, transparent 0 7%, rgb(30 17 12 / 42%) 8% 10%, transparent 11% 24%, rgb(33 18 12 / 35%) 25% 28%, transparent 29% 41%, rgb(36 20 12 / 42%) 42% 45%, transparent 46% 65%, rgb(30 17 10 / 34%) 66% 69%, transparent 70%),
+    repeating-linear-gradient(97deg, #5c3c27 0 17px, #745039 18px 34px, #493020 35px 47px);
+}
+
+.inspection-bark::after {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 27% 32%, rgb(255 224 146 / 8%), transparent 24%),
+    linear-gradient(rgb(0 0 0 / 7%), transparent 22%, transparent 76%, rgb(0 0 0 / 18%));
+  content: "";
+}
+
+.sap-glow,
+.bark-crack,
+.root-soil,
+.trap-bait,
+.trap-light {
+  position: absolute;
+  display: none;
+}
+
+.inspection-sap .sap-glow {
+  top: 21%;
+  left: 47%;
+  display: block;
+  width: 52px;
+  height: 142px;
+  border-radius: 48% 35% 55% 44%;
+  background: linear-gradient(90deg, #a66a1e, #e3b245 48%, #9d5c17);
+  box-shadow: 0 0 30px rgb(235 181 67 / 34%);
+  transform: rotate(8deg);
+}
+
+.inspection-bark-crack .bark-crack {
+  top: 11%;
+  left: 38%;
+  display: block;
+  width: 25%;
+  height: 64%;
+  background: #21160f;
+  box-shadow: inset 13px 0 #3d281a, inset -10px 0 #68452c, 0 0 20px rgb(0 0 0 / 35%);
+  clip-path: polygon(42% 0, 68% 16%, 54% 33%, 77% 51%, 50% 70%, 62% 100%, 21% 81%, 36% 60%, 15% 39%);
+}
+
+.inspection-root .inspection-bark {
+  background:
+    radial-gradient(ellipse at 50% 17%, #6d4930 0 19%, transparent 20%),
+    linear-gradient(150deg, transparent 0 39%, #543722 40% 52%, transparent 53%),
+    linear-gradient(210deg, transparent 0 40%, #69472e 41% 54%, transparent 55%),
+    linear-gradient(#506c3d 0 53%, #68482f 54% 65%, #3e3023 66%);
+}
+
+.inspection-root .root-soil {
+  display: block;
+  inset: 54% 0 0;
+  background:
+    radial-gradient(ellipse at 18px 17px, #9b6134 0 9px, transparent 10px),
+    radial-gradient(ellipse at 46px 39px, #70482c 0 12px, transparent 13px);
+  background-size: 58px 54px;
+  opacity: .72;
+}
+
+.inspection-banana-trap .trap-bait {
+  top: 35%;
+  left: 36%;
+  display: block;
+  width: 31%;
+  height: 21%;
+  border: 9px solid #5b3b24;
+  border-radius: 10px;
+  background: #d5a63d;
+  box-shadow: 0 10px 25px rgb(0 0 0 / 32%);
+  transform: rotate(-4deg);
+}
+
+.inspection-light-trap .inspection-bark {
+  background: radial-gradient(circle at 50% 38%, #e7cf78 0 5%, #576353 17%, #1d302b 48%, #12211e 100%);
+}
+
+.inspection-light-trap .trap-light {
+  top: 22%;
+  left: 40%;
+  display: block;
+  width: 20%;
+  height: 32%;
+  border: 7px solid #4a5148;
+  border-radius: 9px;
+  background: #f8e8a6;
+  box-shadow: 0 0 35px 17px rgb(249 228 150 / 42%);
+}
+
+.ambient-insect {
+  position: absolute;
+  z-index: 3;
+  display: grid;
+  min-width: 35px;
+  justify-items: center;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  animation-delay: var(--ambient-delay);
+}
+
+.ambient-insect i {
+  position: relative;
+  display: block;
+  width: 13px;
+  height: 20px;
+  border-radius: 48%;
+  background: #416f49;
+  box-shadow: inset 3px 0 rgb(255 255 255 / 14%);
+}
+
+.ambient-insect i::before,
+.ambient-insect i::after {
+  position: absolute;
+  content: "";
+}
+
+.ambient-insect i::before {
+  top: -5px;
+  left: 3px;
+  width: 7px;
+  height: 8px;
+  border-radius: 50%;
+  background: inherit;
+}
+
+.ambient-insect small {
+  margin-top: 2px;
+  padding: 1px 4px;
+  border-radius: 8px;
+  background: rgb(20 24 19 / 56%);
+  color: rgb(255 248 220 / 72%);
+  font-size: 7px;
+  white-space: nowrap;
+}
+
+.ambient-black-bottle i { background: #171b18; }
+.ambient-moth i,
+.ambient-butterfly i,
+.ambient-gnat i {
+  width: 9px;
+  height: 15px;
+  background: #574b3d;
+}
+
+.ambient-moth i::after,
+.ambient-butterfly i::after,
+.ambient-gnat i::after {
+  top: 1px;
+  left: -8px;
+  width: 25px;
+  height: 11px;
+  border-radius: 50%;
+  background: rgb(210 190 150 / 72%);
+  clip-path: polygon(0 0, 47% 45%, 100% 0, 79% 100%, 50% 61%, 20% 100%);
+}
+
+.ambient-ant i {
+  width: 6px;
+  height: 14px;
+  background: #1f1b18;
+  box-shadow: 0 6px 0 -1px #1f1b18;
+}
+
+.ambient-pillbug i {
+  width: 15px;
+  height: 11px;
+  background: repeating-linear-gradient(90deg, #3c4441 0 2px, #68706b 2px 4px);
+}
+
+.motion-flutter { animation: ambient-flutter 2.4s ease-in-out infinite; }
+.motion-crawl { animation: ambient-crawl 3.8s ease-in-out infinite; }
+
+@keyframes ambient-flutter {
+  50% { transform: translate(-42%, -62%) rotate(5deg); }
+}
+
+@keyframes ambient-crawl {
+  50% { transform: translate(-34%, -50%); }
+}
+
+.catchable-shadow {
+  position: absolute;
+  z-index: 8;
+  display: grid;
+  width: 60px;
+  height: 60px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgb(255 235 151 / 4%);
+  cursor: pointer;
+  transform: translate(-50%, -50%);
+  -webkit-tap-highlight-color: transparent;
+}
+
+.catchable-shadow i {
+  position: relative;
+  display: block;
+  width: 24px;
+  height: 38px;
+  border-radius: 49% 49% 40% 40%;
+  background: #18201b;
+  filter: drop-shadow(0 4px 3px rgb(0 0 0 / 55%));
+}
+
+.catchable-shadow i::before {
+  position: absolute;
+  top: -14px;
+  left: 4px;
+  width: 14px;
+  height: 18px;
+  border: 4px solid #18201b;
+  border-bottom: 0;
+  border-radius: 9px 9px 0 0;
+  content: "";
+}
+
+.catchable-shadow.family-stag i::before {
+  top: -19px;
+  left: -7px;
+  width: 34px;
+  height: 23px;
+  border-right-color: transparent;
+  border-left-color: transparent;
+}
+
+.catchable-shadow.is-hinting {
+  animation: catch-hint 1.7s ease-in-out infinite;
+}
+
+@keyframes catch-hint {
+  50% { background: rgb(255 228 114 / 15%); box-shadow: 0 0 18px rgb(255 225 116 / 22%); }
+}
+
+.inspection-observation {
+  position: absolute;
+  z-index: 10;
+  right: 12px;
+  bottom: 11px;
+  left: 12px;
+  min-height: 35px;
+  padding: 8px 11px;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 11px;
+  background: rgb(17 29 22 / 76%);
+  color: #efe6c8;
+  font-size: 10px;
+  line-height: 1.55;
+  text-align: center;
+  backdrop-filter: blur(4px);
+}
+
+.inspection-catch-flash {
+  position: absolute;
+  z-index: 30;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgb(255 231 150 / 38%);
+  color: #fff;
+  font-size: 25px;
+  font-weight: 1000;
+  text-shadow: 0 3px 9px #243b2d;
+}
+
+.inspection-controls {
+  z-index: 20;
+  padding: 10px 12px max(11px, env(safe-area-inset-bottom));
+  border-top: 1px solid rgb(255 255 255 / 10%);
+  background: #1d3d2e;
+  box-shadow: 0 -5px 18px rgb(0 0 0 / 22%);
+  touch-action: pan-y;
+}
+
+.inspection-point-tabs {
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+  padding: 2px 1px 8px;
+}
+
+.inspection-point-tabs button,
+.inspection-leave-row button {
+  min-height: 46px;
+  border: 1px solid rgb(255 255 255 / 16%);
+  border-radius: 11px;
+  background: #315b45;
+  color: #fff5d8;
+  font-size: 10px;
+  font-weight: 900;
+  cursor: pointer;
+}
+
+.inspection-point-tabs button {
+  min-width: 126px;
+  padding: 7px 10px;
+  white-space: nowrap;
+}
+
+.inspection-point-tabs button span {
+  margin-right: 5px;
+  color: #f1cd68;
+}
+
+.inspection-point-tabs button.is-current {
+  border-color: #f0cd6b;
+  background: #456e50;
+}
+
+.inspection-point-tabs button:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
+.inspection-leave-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.inspection-leave-row p {
+  margin: 0;
+  color: #c7d0c2;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.inspection-leave-row button {
+  min-width: 112px;
+  padding: 8px 11px;
+  background: #e7d59f;
+  color: #2f4939;
+}
+
+.capture-cutscene {
+  position: absolute;
+  z-index: 6000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 15px;
+  overflow: hidden;
+  background: radial-gradient(circle, #f6dd83 0 13%, #4d7657 35%, #172e23 72%);
+  color: #fffbe8;
+  font-size: 28px;
+  font-weight: 1000;
+  letter-spacing: .05em;
+  text-shadow: 0 4px 12px rgb(0 0 0 / 45%);
+  animation: capture-flash .48s ease both;
+}
+
+.capture-net {
+  position: relative;
+  width: 116px;
+  height: 116px;
+  border: 9px solid #ede3bd;
+  border-radius: 50%;
+  background:
+    repeating-linear-gradient(45deg, transparent 0 13px, rgb(255 255 255 / 38%) 14px 16px),
+    repeating-linear-gradient(-45deg, transparent 0 13px, rgb(255 255 255 / 38%) 14px 16px);
+  box-shadow: 0 0 45px rgb(255 236 160 / 60%);
+  transform: rotate(-18deg);
+}
+
+.capture-net::after {
+  position: absolute;
+  top: 90px;
+  left: 95px;
+  width: 13px;
+  height: 145px;
+  border-radius: 8px;
+  background: #9d7546;
+  content: "";
+  transform: rotate(-29deg);
+  transform-origin: top;
+}
+
+@keyframes capture-flash {
+  0% { opacity: 0; transform: scale(1.2); }
+  32% { opacity: 1; }
+  100% { transform: scale(1); }
+}
+
+.record-badges {
+  display: flex;
+  justify-content: center;
+  gap: 5px;
+  margin-top: 4px;
+}
+
+.catch-details {
+  display: grid;
+  gap: 5px;
+  margin: 13px 0 10px;
+  padding: 10px 11px;
+  border-radius: 11px;
+  background: rgb(255 255 255 / 45%);
+  text-align: left;
+}
+
+.catch-details > div {
+  display: grid;
+  grid-template-columns: 70px 1fr;
+  gap: 8px;
+}
+
+.catch-details dt,
+.catch-details dd {
+  margin: 0;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.catch-details dt {
+  color: #8a734e;
+  font-weight: 900;
+}
+
+.catch-details dd {
+  color: #405348;
+  font-weight: 800;
+}
+
+@media (max-height: 700px) {
+  .inspection-header { min-height: 56px; padding-block: 7px; }
+  .inspection-controls { padding-top: 7px; }
+  .inspection-point-tabs { padding-bottom: 5px; }
+  .inspection-point-tabs button { min-height: 42px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tree-clue-marker,
+  .motion-flutter,
+  .motion-crawl,
+  .catchable-shadow.is-hinting,
+  .field-transition-curtain,
+  .tree-inspection::after,
+  .capture-cutscene {
+    animation: none;
+  }
+}
+
 /* Walkable field exploration */
 .field-viewport {
   position: relative;
@@ -2746,22 +3397,43 @@ button:focus-visible {
 .field-map-grid {
   position: relative;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-areas:
+    "mixed oak school"
+    "road empty bamboo"
+    "house paddy shrine";
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(3, minmax(58px, auto));
   gap: 9px;
   margin-bottom: 12px;
+  background:
+    linear-gradient(#bdcaa9 0 0) 16.666% 50% / 4px 66.666% no-repeat,
+    linear-gradient(#bdcaa9 0 0) 83.333% 50% / 4px 66.666% no-repeat,
+    linear-gradient(90deg, #bdcaa9 0 0) 50% 16.666% / 66.666% 4px no-repeat,
+    linear-gradient(90deg, #bdcaa9 0 0) 50% 83.333% / 66.666% 4px no-repeat;
 }
 
-.field-map-grid::before {
-  position: absolute;
-  z-index: 0;
-  top: 8%;
-  bottom: 8%;
-  left: 50%;
-  width: 4px;
-  border-radius: 4px;
-  background: #bdcaa9;
-  content: "";
-  transform: translateX(-50%);
+.map-slot-mixed-forest { grid-area: mixed; }
+.map-slot-oak-forest { grid-area: oak; }
+.map-slot-school { grid-area: school; }
+.map-slot-forest-road { grid-area: road; }
+.map-slot-bamboo-grove { grid-area: bamboo; }
+.map-slot-grandma-house { grid-area: house; }
+.map-slot-paddy-road { grid-area: paddy; }
+.map-slot-shrine { grid-area: shrine; }
+
+.map-section-label {
+  margin: 0 0 7px;
+  color: #5e685f;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .04em;
+}
+
+.field-map-branches {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+  margin-bottom: 12px;
 }
 
 .field-map-node {
@@ -2770,16 +3442,16 @@ button:focus-visible {
   display: flex;
   min-height: 64px;
   align-items: center;
-  gap: 8px;
-  padding: 9px;
+  gap: 5px;
+  padding: 7px;
   border: 1px solid #dfd3b9;
   border-radius: 12px;
   background: #fffdf4;
 }
 
 .field-map-node > i {
-  width: 16px;
-  height: 16px;
+  width: 13px;
+  height: 13px;
   flex: 0 0 auto;
   border: 3px solid #fffdf4;
   border-radius: 50%;
@@ -2794,12 +3466,12 @@ button:focus-visible {
 
 .field-map-node strong {
   margin-bottom: 2px;
-  font-size: 11px;
+  font-size: 9px;
 }
 
 .field-map-node small {
   color: #7b827c;
-  font-size: 8px;
+  font-size: 7px;
   line-height: 1.35;
 }
 

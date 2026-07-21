@@ -1,21 +1,23 @@
 import { insectById } from "../data/insects";
-import { HOME_FIELD_IDS, fieldById, getDefaultFieldForLocation, getSpawnPoint } from "../data/fields";
+import { HOME_FIELD_IDS, fieldById, getSpawnPoint } from "../data/fields";
 import { locationById } from "../data/locations";
 import { npcById } from "../data/npcs";
+import { initialTrapStates, treeById } from "../data/trees";
 import type {
   AdRewardKind,
   FieldId,
   FacingDirection,
   GameCommand,
   GameState,
-  LocationId,
   Outcome,
   Specimen,
+  TreeInspectionSession,
 } from "../types/game";
 import {
   INTERACTION_RADIUS,
   distanceBetween,
   getFieldCollisionRects,
+  isAtEdgeExit,
   isPositionWalkable,
 } from "./field";
 import {
@@ -28,10 +30,15 @@ import {
 import {
   getGrandmaHint,
   isFieldExitAvailable,
-  isLocationAvailable,
   isNpcPresent,
-  rollEncounter,
 } from "./rules";
+import {
+  commitInspectionSession,
+  generateInspectionSession,
+  getInspectionSessionId,
+  isInspectionComplete,
+  isInspectionPointUnlocked,
+} from "./inspection";
 
 const withRevision = (state: GameState): GameState => ({
   ...state,
@@ -42,6 +49,7 @@ const fieldStateAt = (
   fieldId: FieldId,
   spawnId?: string,
   discoveredFieldIds: FieldId[] = [fieldId],
+  lastTransitionToken?: string,
 ) => {
   const point = getSpawnPoint(fieldId, spawnId);
   return {
@@ -54,12 +62,13 @@ const fieldStateAt = (
     discoveredFieldIds: discoveredFieldIds.includes(fieldId)
       ? discoveredFieldIds
       : [...discoveredFieldIds, fieldId],
+    lastTransitionToken,
   };
 };
 
 export const createInitialGame = (seed = `summer-${Date.now().toString(36)}`): GameState => ({
-  schemaVersion: 2,
-  contentVersion: 2,
+  schemaVersion: 3,
+  contentVersion: 3,
   rngVersion: 1,
   worldSeed: seed,
   revision: 0,
@@ -82,6 +91,10 @@ export const createInitialGame = (seed = `summer-${Date.now().toString(36)}`): G
     appearanceBoostUntil: 0,
     nextBoostExtensionMinutes: 0,
   },
+  inspectionSessions: {},
+  discoveredClueSessionIds: [],
+  caughtEncounterIds: [],
+  trapStates: initialTrapStates(),
 });
 
 const advanceAfterAction = (
@@ -113,6 +126,14 @@ const advanceAfterAction = (
   };
 
   if (destinationMinutes >= DAY_END) {
+    if (state.activeInspectionSessionId) {
+      return {
+        ...next,
+        timeMinutes: DAY_END,
+        phase: "evening",
+        pendingBoundaryEvent: "day-ended",
+      };
+    }
     return syncExplorationPeriod({ ...next, timeMinutes: DAY_END, phase: "day-ended" });
   }
 
@@ -124,6 +145,14 @@ const advanceAfterAction = (
     (actionStartedAwayFromHome || actionEndsAwayFromHome) &&
     state.flags.pickupCompletedDay !== state.day
   ) {
+    if (state.activeInspectionSessionId) {
+      return {
+        ...next,
+        timeMinutes: EVENING_START,
+        phase: "day",
+        pendingBoundaryEvent: "pickup",
+      };
+    }
     const pickupState = actionStartedAwayFromHome ? actionOriginState : state;
     return syncExplorationPeriod({
       ...next,
@@ -149,42 +178,42 @@ const notice = (state: GameState, title: string, text: string): GameState =>
 const isPlayerNear = (state: GameState, point: { x: number; y: number }): boolean =>
   distanceBetween(state.field, point) < INTERACTION_RADIUS;
 
-const move = (state: GameState, locationId: LocationId): GameState => {
-  const fieldId = getDefaultFieldForLocation(locationId);
-  if (state.locationId === locationId && state.field.fieldId === fieldId) return state;
-  const access = isLocationAvailable(state, locationId);
-  if (!access.available) return notice(state, "まだ行けません", access.reason ?? "今は移動できません");
-
-  const visitIndex = (state.visitCounters[locationId] ?? 0) + 1;
-  const definition = locationById[locationId];
-  const arrived: GameState = {
-    ...state,
-    locationId,
-    field: fieldStateAt(fieldId, undefined, state.field.discoveredFieldIds),
-    visitCounters: { ...state.visitCounters, [locationId]: visitIndex },
-    exploration:
-      definition.hotspots.length > 0
-        ? {
-            locationId,
-            visitIndex,
-            period: getTimePeriod(state.timeMinutes),
-            searchedSpotIds: [],
-          }
-        : undefined,
-  };
-  return withRevision(advanceAfterAction(arrived, definition.travelMinutes, undefined, state));
+const currentFieldCollisionRects = (state: GameState) => {
+  const field = fieldById[state.field.fieldId];
+  const closedExitIds = field.exits
+    .filter((exit) => !isFieldExitAvailable(state, exit).available)
+    .map((exit) => exit.id);
+  return getFieldCollisionRects(field, closedExitIds);
 };
 
-const travelExit = (state: GameState, exitId: string): GameState => {
+const travelEdge = (
+  state: GameState,
+  command: Extract<GameCommand, { type: "TRAVEL_EDGE" }>,
+): GameState => {
   const currentField = fieldById[state.field.fieldId];
-  const exit = currentField.exits.find((candidate) => candidate.id === exitId);
+  if (state.field.lastTransitionToken === command.transitionToken) return state;
+  const exit = currentField.exits.find((candidate) => candidate.id === command.exitId);
   if (!exit) return notice(state, "道が見つかりません", "いったん周りを見直してみよう。");
-  if (!isPlayerNear(state, exit)) {
-    return notice(state, "出口へ近づこう", "行き先の看板が見えるところまで歩いてみよう。");
-  }
   const access = isFieldExitAvailable(state, exit);
   if (!access.available) return notice(state, "今は通れません", access.reason ?? "別の道を探してみよう。");
+  if (
+    !Number.isFinite(command.x) ||
+    !Number.isFinite(command.y) ||
+    !isAtEdgeExit(command, command.facing, exit, currentField)
+  ) return state;
 
+  const actionOriginState: GameState = {
+    ...state,
+    field: {
+      ...state.field,
+      x: command.x,
+      y: command.y,
+      facing: command.facing,
+      lastSafeX: command.x,
+      lastSafeY: command.y,
+      lastTransitionToken: command.transitionToken,
+    },
+  };
   const destination = fieldById[exit.toFieldId];
   const destinationLocationId = destination.locationId;
   const locationId = destinationLocationId ?? state.locationId;
@@ -194,7 +223,12 @@ const travelExit = (state: GameState, exitId: string): GameState => {
   const arrived: GameState = {
     ...state,
     locationId,
-    field: fieldStateAt(exit.toFieldId, exit.toSpawnId, state.field.discoveredFieldIds),
+    field: fieldStateAt(
+      exit.toFieldId,
+      exit.toSpawnId,
+      state.field.discoveredFieldIds,
+      command.transitionToken,
+    ),
     visitCounters: destinationLocationId && visitIndex
       ? { ...state.visitCounters, [destinationLocationId]: visitIndex }
       : state.visitCounters,
@@ -208,81 +242,191 @@ const travelExit = (state: GameState, exitId: string): GameState => {
           }
         : undefined,
   };
-  return withRevision(advanceAfterAction(arrived, exit.travelMinutes, undefined, state));
+  return withRevision(advanceAfterAction(arrived, exit.travelMinutes, undefined, actionOriginState));
 };
 
-const focusSpot = (state: GameState, spotId: string): GameState => {
-  if (!state.exploration || state.exploration.locationId !== state.locationId) return state;
-  const exists = locationById[state.locationId].hotspots.some((spot) => spot.id === spotId);
-  if (!exists) return state;
+const openTreeInspection = (state: GameState, treeId: string): GameState => {
+  const tree = treeById[treeId];
+  if (!tree || tree.fieldId !== state.field.fieldId || !state.exploration) {
+    return notice(state, "探索する木へ近づこう", "気になる木やトラップのそばまで歩いてみよう。");
+  }
+  if (!isPlayerNear(state, { x: tree.x, y: tree.y + 30 })) {
+    return notice(state, "もう少し近づこう", `${tree.label}のそばまで歩いてみよう。`);
+  }
+
+  const sessionId = getInspectionSessionId(state, tree);
+  const existing = state.inspectionSessions[sessionId];
+  if (existing?.committed) {
+    const reopened: TreeInspectionSession = {
+      ...existing,
+      returnPosition: {
+        x: state.field.x,
+        y: state.field.y,
+        facing: state.field.facing,
+      },
+    };
+    return withRevision({
+      ...state,
+      activeInspectionSessionId: existing.id,
+      inspectionSessions: { ...state.inspectionSessions, [existing.id]: reopened },
+    });
+  }
+
+  const preview = existing ?? generateInspectionSession(state, tree);
+  if (!preview) {
+    return notice(state, "まだ調べられません", "この仕掛けは暗くなってから使えます。");
+  }
+  const session = commitInspectionSession(preview, state);
+  const exploration = isInspectionComplete(session, tree) && !state.exploration.searchedSpotIds.includes(tree.legacySpotId)
+    ? {
+        ...state.exploration,
+        focusedSpotId: tree.legacySpotId,
+        searchedSpotIds: [...state.exploration.searchedSpotIds, tree.legacySpotId],
+      }
+    : {
+        ...state.exploration,
+        focusedSpotId: tree.legacySpotId,
+      };
+  const started: GameState = {
+    ...state,
+    activeInspectionSessionId: session.id,
+    inspectionSessions: { ...state.inspectionSessions, [session.id]: session },
+    exploration,
+  };
+  return withRevision(advanceAfterAction(started, 15, undefined, state));
+};
+
+const viewInspectionPoint = (state: GameState, pointId: string): GameState => {
+  const sessionId = state.activeInspectionSessionId;
+  if (!sessionId) return state;
+  const session = state.inspectionSessions[sessionId];
+  const tree = session ? treeById[session.treeId] : undefined;
+  const inspectionPoint = tree?.inspectionPoints.find((point) => point.id === pointId);
+  if (!session || !tree || !inspectionPoint) return state;
+  if (
+    inspectionPoint.activePeriods && !inspectionPoint.activePeriods.includes(session.period) ||
+    !isInspectionPointUnlocked(session, inspectionPoint)
+  ) return state;
+  const examinedPointIds = session.examinedPointIds.includes(pointId)
+    ? session.examinedPointIds
+    : [...session.examinedPointIds, pointId];
+  const nextSession: TreeInspectionSession = {
+    ...session,
+    currentPointId: pointId,
+    examinedPointIds,
+  };
+  const completed = isInspectionComplete(nextSession, tree);
+  const exploration = state.exploration && completed && !state.exploration.searchedSpotIds.includes(tree.legacySpotId)
+    ? {
+        ...state.exploration,
+        searchedSpotIds: [...state.exploration.searchedSpotIds, tree.legacySpotId],
+      }
+    : state.exploration;
   return withRevision({
     ...state,
-    exploration: { ...state.exploration, focusedSpotId: spotId },
+    exploration,
+    inspectionSessions: { ...state.inspectionSessions, [sessionId]: nextSession },
   });
 };
 
-const inspectSpot = (state: GameState, requestedSpotId?: string): GameState => {
-  const exploration = state.exploration;
-  const spotId = requestedSpotId ?? exploration?.focusedSpotId;
-  if (!exploration || !spotId) {
-    return notice(state, "探索する場所へ近づこう", "気になる木やトラップのそばまで歩いてみよう。");
-  }
-  const hotspot = locationById[state.locationId].hotspots.find(
-    (candidate) => candidate.id === spotId,
-  );
-  if (!hotspot) return state;
-  const positionedHotspot = fieldById[state.field.fieldId].hotspots.find(
-    (candidate) => candidate.spotId === hotspot.id,
-  );
-  if (!positionedHotspot || !isPlayerNear(state, { x: positionedHotspot.x, y: positionedHotspot.y + 30 })) {
-    return notice(state, "もう少し近づこう", `${hotspot.label}のそばまで歩いてみよう。`);
-  }
-  if (hotspot.activePeriods && !hotspot.activePeriods.includes(getTimePeriod(state.timeMinutes))) {
-    return notice(state, "まだ使えません", "ライトトラップは暗くなってから使えます。");
-  }
-  if (exploration.searchedSpotIds.includes(hotspot.id)) {
-    return notice(state, "調査済み", "この探索では、もう調べた場所です。いったん別の場所へ移動してみよう。");
-  }
-
-  const encounter = rollEncounter(state, hotspot);
-  const searchedExploration = {
-    ...exploration,
-    focusedSpotId: hotspot.id,
-    searchedSpotIds: [...exploration.searchedSpotIds, hotspot.id],
-  };
-  const finishTime = Math.min(state.timeMinutes + 15, DAY_END);
-
-  if (!encounter) {
-    return withRevision(
-      advanceAfterAction(
-        { ...state, exploration: searchedExploration },
-        15,
-        { type: "empty", spotId: hotspot.id, text: "そっと覗いたけれど、何もいない……。" },
-      ),
-    );
-  }
+const catchInspectionEncounter = (state: GameState, encounterId: string): GameState => {
+  const sessionId = state.activeInspectionSessionId;
+  const session = sessionId ? state.inspectionSessions[sessionId] : undefined;
+  const encounter = session?.catchableEncounter;
+  if (
+    !sessionId ||
+    !session ||
+    !encounter ||
+    encounter.id !== encounterId ||
+    encounter.caught ||
+    state.caughtEncounterIds.includes(encounterId)
+  ) return state;
 
   const previousBest = state.specimens
     .filter((specimen) => specimen.insectId === encounter.insectId)
     .reduce((best, specimen) => Math.max(best, specimen.sizeMm), 0);
   const specimen: Specimen = {
-    id: `${state.day}-${state.locationId}-${exploration.visitIndex}-${hotspot.id}`,
+    id: encounter.id,
     insectId: encounter.insectId,
     sizeMm: encounter.sizeMm,
-    day: state.day,
-    caughtAtMinutes: finishTime,
+    day: session.day,
+    caughtAtMinutes: session.resolvedAtMinutes,
     locationId: state.locationId,
-    spotId: hotspot.id,
-    rankingEligible: !encounter.boostAssisted,
+    spotId: session.treeId,
+    treeId: session.treeId,
+    inspectionPointId: encounter.pointId,
+    rankingEligible: encounter.rankingEligible,
   };
+  const nextSession = {
+    ...session,
+    catchableEncounter: { ...encounter, caught: true },
+  };
+  return withRevision({
+    ...state,
+    specimens: [...state.specimens, specimen],
+    caughtEncounterIds: [...state.caughtEncounterIds, encounterId],
+    inspectionSessions: { ...state.inspectionSessions, [sessionId]: nextSession },
+    pendingOutcome: {
+      type: "caught",
+      specimen,
+      isPersonalBest: specimen.sizeMm > previousBest,
+      isFirstCatch: previousBest === 0,
+    },
+  });
+};
 
-  return withRevision(
-    advanceAfterAction(
-      { ...state, exploration: searchedExploration, specimens: [...state.specimens, specimen] },
-      15,
-      { type: "caught", specimen, isPersonalBest: specimen.sizeMm > previousBest },
-    ),
-  );
+const closeTreeInspection = (state: GameState): GameState => {
+  const sessionId = state.activeInspectionSessionId;
+  if (!sessionId) return state;
+  const session = state.inspectionSessions[sessionId];
+  let next: GameState = {
+    ...state,
+    activeInspectionSessionId: undefined,
+    field: session
+      ? {
+          ...state.field,
+          ...session.returnPosition,
+          lastSafeX: session.returnPosition.x,
+          lastSafeY: session.returnPosition.y,
+        }
+      : state.field,
+  };
+  if (state.pendingBoundaryEvent === "pickup") {
+    next = { ...next, phase: "pickup", timeMinutes: EVENING_START, pendingBoundaryEvent: undefined };
+  } else if (state.pendingBoundaryEvent === "day-ended") {
+    next = { ...next, phase: "day-ended", timeMinutes: DAY_END, pendingBoundaryEvent: undefined };
+  }
+  return withRevision(next);
+};
+
+const discoverTreeClue = (
+  state: GameState,
+  command: Extract<GameCommand, { type: "DISCOVER_TREE_CLUE" }>,
+): GameState => {
+  const tree = treeById[command.treeId];
+  if (!tree || tree.fieldId !== state.field.fieldId || !state.exploration) return state;
+  if (distanceBetween({ x: command.x, y: command.y }, tree) > 220) return state;
+  const sessionId = getInspectionSessionId(state, tree);
+  if (state.discoveredClueSessionIds.includes(sessionId)) return state;
+  const session = state.inspectionSessions[sessionId] ?? generateInspectionSession(state, tree);
+  if (!session?.clueVisible) return state;
+  const point = { x: Math.round(command.x * 10) / 10, y: Math.round(command.y * 10) / 10 };
+  const field = fieldById[state.field.fieldId];
+  const validPosition = isPositionWalkable(point, field, currentFieldCollisionRects(state));
+  return withRevision({
+    ...state,
+    field: validPosition
+      ? {
+          ...state.field,
+          ...point,
+          facing: command.facing,
+          lastSafeX: point.x,
+          lastSafeY: point.y,
+        }
+      : state.field,
+    inspectionSessions: { ...state.inspectionSessions, [session.id]: session },
+    discoveredClueSessionIds: [...state.discoveredClueSessionIds, session.id],
+  });
 };
 
 const talk = (state: GameState, npcId: Parameters<typeof isNpcPresent>[1]): GameState => {
@@ -365,7 +509,7 @@ const syncPlayerPosition = (
   if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return state;
   const field = fieldById[state.field.fieldId];
   const point = { x: Math.round(position.x * 10) / 10, y: Math.round(position.y * 10) / 10 };
-  if (!isPositionWalkable(point, field, getFieldCollisionRects(field))) return state;
+  if (!isPositionWalkable(point, field, currentFieldCollisionRects(state))) return state;
   if (
     state.field.x === point.x &&
     state.field.y === point.y &&
@@ -387,7 +531,7 @@ const syncPlayerPosition = (
 
 const resetPlayerPosition = (state: GameState): GameState => {
   const field = fieldById[state.field.fieldId];
-  const obstacles = getFieldCollisionRects(field);
+  const obstacles = currentFieldCollisionRects(state);
   const lastSafe = { x: state.field.lastSafeX, y: state.field.lastSafeY };
   const fallback = getSpawnPoint(field.id);
   const point = isPositionWalkable(lastSafe, field, obstacles) ? lastSafe : fallback;
@@ -412,20 +556,35 @@ export const gameReducer = (state: GameState, command: GameCommand): GameState =
   ) {
     return state;
   }
+  if (
+    state.activeInspectionSessionId &&
+    ![
+      "VIEW_INSPECTION_POINT",
+      "CATCH_INSPECTION_ENCOUNTER",
+      "CLOSE_TREE_INSPECTION",
+      "ACKNOWLEDGE_OUTCOME",
+      "RESET_GAME",
+    ].includes(command.type)
+  ) return state;
   switch (command.type) {
-    case "MOVE":
-      return move(state, command.locationId);
-    case "FOCUS_SPOT":
-      return focusSpot(state, command.spotId);
-    case "INSPECT_SPOT":
+    case "OPEN_TREE_INSPECTION":
       if (state.phase === "pickup" || state.phase === "day-ended") return state;
-      return inspectSpot(state, command.spotId);
+      return openTreeInspection(state, command.treeId);
+    case "VIEW_INSPECTION_POINT":
+      return viewInspectionPoint(state, command.pointId);
+    case "CATCH_INSPECTION_ENCOUNTER":
+      return catchInspectionEncounter(state, command.encounterId);
+    case "CLOSE_TREE_INSPECTION":
+      return closeTreeInspection(state);
+    case "DISCOVER_TREE_CLUE":
+      if (state.phase === "pickup" || state.phase === "day-ended") return state;
+      return discoverTreeClue(state, command);
     case "TALK":
       if (state.phase === "pickup" || state.phase === "day-ended") return state;
       return talk(state, command.npcId);
-    case "TRAVEL_EXIT":
+    case "TRAVEL_EDGE":
       if (state.phase === "pickup" || state.phase === "day-ended") return state;
-      return travelExit(state, command.exitId);
+      return travelEdge(state, command);
     case "SYNC_PLAYER_POSITION":
       if (state.phase === "pickup" || state.phase === "day-ended") return state;
       return syncPlayerPosition(state, command);
@@ -454,6 +613,7 @@ export const gameReducer = (state: GameState, command: GameCommand): GameState =
         exploration: undefined,
         visitCounters: { ...state.visitCounters, "grandma-house": visitIndex },
         flags: { ...state.flags, pickupCompletedDay: state.day },
+        pendingBoundaryEvent: undefined,
       });
     }
     case "START_NEXT_DAY":
@@ -468,6 +628,11 @@ export const gameReducer = (state: GameState, command: GameCommand): GameState =
         exploration: undefined,
         pendingOutcome: undefined,
         buffs: { appearanceBoostUntil: 0, nextBoostExtensionMinutes: 0 },
+        inspectionSessions: {},
+        activeInspectionSessionId: undefined,
+        discoveredClueSessionIds: [],
+        caughtEncounterIds: [],
+        pendingBoundaryEvent: undefined,
       });
     case "RESET_GAME":
       return createInitialGame(command.seed);
